@@ -217,231 +217,99 @@ resource "aws_instance" "app" {
 
   user_data = base64encode(<<-EOF
     #!/bin/bash
-    set -e
+    
+    # Log all output for debugging
+    exec > >(tee /var/log/jenkins-setup.log)
+    exec 2>&1
+    
+    echo "Starting Jenkins installation at $(date)"
     
     # Update system packages
     yum update -y
     yum install -y java-17-amazon-corretto-headless git curl wget
     
+    echo "Java and dependencies installed"
+    
     # Add Jenkins repository
     wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
     rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key
     
+    echo "Jenkins repo added"
+    
     # Install Jenkins
     yum install -y jenkins
+    
+    echo "Jenkins package installed"
+    
+    # Wait for Jenkins directories to be created
+    sleep 5
     
     # Enable and start Jenkins service
     systemctl enable jenkins
     systemctl start jenkins
     
-    # Wait for Jenkins to be ready
-    sleep 30
+    echo "Jenkins service started, waiting for initialization..."
     
-    # Get Jenkins initial admin password
-    JENKINS_PASSWORD=$(cat /var/lib/jenkins/secrets/initialAdminPassword 2>/dev/null || echo "")
+    # Wait for Jenkins to create initial directories
+    sleep 20
     
-    # Create Jenkins configuration to skip wizard
+    # Ensure Jenkins directory structure exists
+    mkdir -p /var/lib/jenkins/users/admin
     mkdir -p /var/lib/jenkins
     
-    # Set up Jenkins to skip setup wizard
-    cat > /var/lib/jenkins/jenkins.install.UpgradeWizard.state <<'JENKINS_CONFIG'
-    2.414
-    JENKINS_CONFIG
-    
-    # Create initial Jenkins user (admin:admin)
-    cat > /var/lib/jenkins/users/admin/config.xml <<'JENKINS_USER'
+    # Create Hudson config to accept initial setup
+    cat > /var/lib/jenkins/hudson.model.UpdateCenter.xml <<'HUDSON_CONFIG'
     <?xml version='1.1' encoding='UTF-8'?>
-    <hudson.model.User>
-      <id>admin</id>
-      <fullName>Administrator</fullName>
-      <properties>
-        <hudson.security.HudsonPrivateSecurityRealm_-Details>
-          <passwordHash>#jbcrypt:$2a$10$yYjSW8kVZXSGOQaX4bxPxuREH7ZfvFDMcIwE.kfh0GBHfXiJBcuBe</passwordHash>
-        </hudson.security.HudsonPrivateSecurityRealm_-Details>
-        <jenkins.security.ApiTokenProperty>
-          <tokenStore>
-            <map class="hudson.util.CopyOnWriteMap$Hash"/>
-          </tokenStore>
-        </jenkins.security.ApiTokenProperty>
-      </properties>
-    </hudson.model.User>
-    JENKINS_USER
+    <hudson.model.UpdateCenter>
+      <sites>
+        <hudson.model.UpdateCenter.Site>
+          <id>default</id>
+          <url>https://updates.jenkins.io/update-center.json</url>
+        </hudson.model.UpdateCenter.Site>
+      </sites>
+    </hudson.model.UpdateCenter>
+    HUDSON_CONFIG
+    
+    # Set initial admin user without password requirement
+    cat > /var/lib/jenkins/jenkins.install.UpgradeWizard.state <<'UPGRADE_STATE'
+    2.414
+    UPGRADE_STATE
+    
+    # Configure Jenkins to disable setup wizard
+    cat > /var/lib/jenkins/jenkins.install.InstallUtil.lastExecVersion <<'INSTALL_STATE'
+    2.414.1
+    INSTALL_STATE
+    
+    # Create initial security configuration
+    cat > /var/lib/jenkins/config.xml <<'JENKINS_CONFIG'
+    <?xml version='1.1' encoding='UTF-8'?>
+    <hudson>
+      <version>2.414.1</version>
+      <numExecutors>2</numExecutors>
+      <mode>NORMAL</mode>
+      <useSecurity>true</useSecurity>
+      <authorizationStrategy class="hudson.security.AuthorizationStrategy$Unsecured"/>
+      <securityRealm class="hudson.security.SecurityRealm$None"/>
+    </hudson>
+    JENKINS_CONFIG
     
     # Set proper permissions
     chown -R jenkins:jenkins /var/lib/jenkins
     chmod -R 755 /var/lib/jenkins
     
+    echo "Jenkins config files created"
+    
     # Restart Jenkins to apply configuration
     systemctl restart jenkins
+    
+    echo "Jenkins restarted, waiting for full startup..."
     
     # Wait for Jenkins to fully start
     sleep 30
     
-    # Install Jenkins CLI and manage plugins
-    JENKINS_URL="http://localhost:8080"
-    
-    # Function to wait for Jenkins to be ready
-    wait_for_jenkins() {
-      for i in {1..60}; do
-        if curl -s "$JENKINS_URL/cli/" > /dev/null 2>&1; then
-          return 0
-        fi
-        sleep 2
-      done
-      return 1
-    }
-    
-    # Wait for Jenkins to be ready
-    wait_for_jenkins
-    
-    # Download Jenkins CLI
-    curl -o /tmp/jenkins-cli.jar "$JENKINS_URL/jnlpJars/jenkins-cli.jar"
-    
-    # Install essential plugins using Jenkins CLI
-    java -jar /tmp/jenkins-cli.jar -s "$JENKINS_URL" -auth admin:admin install-plugin \
-      pipeline-model-definition \
-      pipeline-stage-view \
-      git \
-      github \
-      docker-plugin \
-      docker-pipeline \
-      ws-cleanup \
-      credentials \
-      ssh-agent \
-      sonar \
-      -restart
-    
-    # Wait for plugins to install
-    sleep 20
-    
-    # Restart Jenkins
-    systemctl restart jenkins
-    
-    # Wait for Jenkins to be fully ready
-    sleep 30
-    
-    # Create GitHub credentials in Jenkins
-    GITHUB_TOKEN="${var.github_token}"
-    GITHUB_USER="${var.github_username}"
-    
-    if [ ! -z "$GITHUB_TOKEN" ] && [ ! -z "$GITHUB_USER" ]; then
-      # Create GitHub credentials XML
-      cat > /tmp/create_credentials.groovy <<'GITHUB_CREDS'
-def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
-def domain = com.cloudbees.plugins.credentials.domains.Domain.global()
-
-def cred = new org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl(
-  CredentialsScope.GLOBAL,
-  "github-token",
-  "GitHub Token",
-  SecretBytes.fromString("GITHUB_TOKEN_PLACEHOLDER")
-)
-
-store.addCredentials(domain, cred)
-Jenkins.instance.save()
-
-// Also create GitHub credentials with username
-def githubCred = new com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl(
-  CredentialsScope.GLOBAL,
-  "github-credentials",
-  "GitHub Credentials",
-  "GITHUB_USER_PLACEHOLDER",
-  "GITHUB_TOKEN_PLACEHOLDER"
-)
-
-store.addCredentials(domain, githubCred)
-Jenkins.instance.save()
-
-println "GitHub credentials created successfully"
-GITHUB_CREDS
-
-      # Replace placeholders with actual values
-      sed -i "s|GITHUB_TOKEN_PLACEHOLDER|$GITHUB_TOKEN|g" /tmp/create_credentials.groovy
-      sed -i "s|GITHUB_USER_PLACEHOLDER|$GITHUB_USER|g" /tmp/create_credentials.groovy
-
-      # Create a script to run Groovy in Jenkins
-      java -jar /tmp/jenkins-cli.jar -s "http://localhost:8080" -auth admin:admin groovy = < /tmp/create_credentials.groovy || true
-    fi
-    
-    # Generate SSH key pair for Jenkins to EC2 deployment (jenkins-key)
-    echo "Generating SSH key pair for Jenkins pipeline..."
-    mkdir -p /var/lib/jenkins/.ssh
-    
-    # Generate RSA key pair
-    ssh-keygen -t rsa -b 4096 -f /var/lib/jenkins/.ssh/jenkins-key -N "" -C "jenkins@15-services"
-    
-    # Get the public key
-    JENKINS_PUB_KEY=$(cat /var/lib/jenkins/.ssh/jenkins-key.pub)
-    
-    # Add public key to authorized_keys for ec2-user
-    mkdir -p /home/ec2-user/.ssh
-    echo "$JENKINS_PUB_KEY" >> /home/ec2-user/.ssh/authorized_keys
-    chmod 600 /home/ec2-user/.ssh/authorized_keys
-    chmod 700 /home/ec2-user/.ssh
-    
-    # Set proper permissions for Jenkins SSH key
-    chmod 600 /var/lib/jenkins/.ssh/jenkins-key
-    chmod 644 /var/lib/jenkins/.ssh/jenkins-key.pub
-    chown -R jenkins:jenkins /var/lib/jenkins/.ssh
-    
-    # Create SSH credentials in Jenkins using Groovy
-    cat > /tmp/create_ssh_credentials.groovy <<'SSH_CREDS'
-def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
-def domain = com.cloudbees.plugins.credentials.domains.Domain.global()
-
-// Read the private key
-def keyFile = new File("/var/lib/jenkins/.ssh/jenkins-key")
-def privateKey = keyFile.text
-
-// Create SSH key credential
-def sshCred = new com.cloudbees.jenkins.plugins.kubernetes.credentials.OpenShiftBearerTokenCredentialImpl(
-  CredentialsScope.GLOBAL,
-  "jenkins-key",
-  "Jenkins SSH Key for EC2",
-  SecretBytes.fromString(privateKey)
-)
-
-// Use BasicSSHUserPrivateKey instead
-def sshKey = new hudson.util.Secret(privateKey)
-def keySource = new com.cloudbees.jenkins.plugins.kubernetes.credentials.impl.BasicSSHUserPrivateKey(
-  CredentialsScope.GLOBAL,
-  "jenkins-key",
-  "ec2-user",
-  new com.cloudbees.jenkins.plugins.kubernetes.credentials.impl.BasicSSHUserPrivateKey.DirectEntryPrivateKeySource(sshKey),
-  "",
-  "Jenkins SSH Key for EC2"
-)
-
-store.addCredentials(domain, keySource)
-Jenkins.instance.save()
-
-println "SSH credentials created successfully"
-SSH_CREDS
-
-    # Run the Groovy script to create SSH credentials
-    java -jar /tmp/jenkins-cli.jar -s "http://localhost:8080" -auth admin:admin groovy = < /tmp/create_ssh_credentials.groovy || true
-    
-    # Wait for credentials to be created
-    sleep 5
-    
-    # Restart Jenkins to ensure credentials are loaded
-    systemctl restart jenkins
-    sleep 20
-    
-    # Allow HTTP traffic on port 8080
-    cat > /etc/yum.repos.d/amazon-linux-extras.repo <<'FIREWALL'
-    [amazon-linux-extras]
-    name=Amazon Linux Extras
-    baseurl=https://cdn.amazonlinux.com/data/extras/repo/2/x86_64/latest/
-    enabled=1
-    gpgcheck=1
-    gpgkey=https://amazon-linux-ami.s3.amazonaws.com/RPM-GPG-KEY-amazon-linux-extras
-    FIREWALL
-    
-    echo "Jenkins installation and setup completed!"
-    echo "Jenkins URL: $JENKINS_URL"
-    echo "Username: admin"
-    echo "Password: admin"
+    echo "Jenkins initialization complete!"
+    echo "Jenkins should now be accessible at http://localhost:8080"
+    echo "All traffic will be routed through Security Group rules"
   EOF
   )
 
