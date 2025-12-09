@@ -4,14 +4,14 @@ output "vpc_id" {
 }
 
 output "rds_endpoint" {
-  description = "Lambda function ARN"
-  value       = aws_lambda_function.app.arn
+  description = "EKS Cluster Name"
+  value       = aws_eks_cluster.main.name
   sensitive   = false
 }
 
 output "rds_database_name" {
-  description = "Lambda function name"
-  value       = aws_lambda_function.app.function_name
+  description = "EKS Cluster Endpoint"
+  value       = aws_eks_cluster.main.endpoint
 }
 
 output "s3_bucket_name" {

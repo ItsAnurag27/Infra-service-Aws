@@ -89,9 +89,9 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# SERVICE 2: Lambda Function
-resource "aws_iam_role" "lambda_role" {
-  name = "${var.project_name}-lambda-role"
+# SERVICE 2: EKS Cluster
+resource "aws_iam_role" "eks_cluster_role" {
+  name = "${var.project_name}-eks-cluster-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -99,52 +99,113 @@ resource "aws_iam_role" "lambda_role" {
       Action = "sts:AssumeRole"
       Effect = "Allow"
       Principal = {
-        Service = "lambda.amazonaws.com"
+        Service = "eks.amazonaws.com"
       }
     }]
   })
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
+  role       = aws_iam_role.eks_cluster_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+}
+
+resource "aws_security_group" "eks_cluster" {
+  name        = "${var.project_name}-eks-cluster-sg"
+  description = "Security group for EKS cluster"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
   tags = {
-    Name = "${var.project_name}-lambda-role"
+    Name = "${var.project_name}-eks-cluster-sg"
   }
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_basic" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
+resource "aws_eks_cluster" "main" {
+  name     = "${var.project_name}-cluster"
+  role_arn = aws_iam_role.eks_cluster_role.arn
 
-resource "aws_lambda_function" "app" {
-  filename      = "lambda_function.zip"
-  function_name = "${var.project_name}-function"
-  role          = aws_iam_role.lambda_role.arn
-  handler       = "index.handler"
-  runtime       = "python3.11"
+  vpc_config {
+    subnet_ids              = concat(aws_subnet.public[*].id, aws_subnet.private[*].id)
+    endpoint_private_access = true
+    endpoint_public_access  = true
+  }
 
-  source_code_hash = filebase64sha256("${path.module}/lambda_function.zip")
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_cluster_policy
+  ]
 
   tags = {
-    Name = "${var.project_name}-lambda"
+    Name = "${var.project_name}-eks-cluster"
   }
 }
 
-resource "aws_lambda_permission" "allow_alb" {
-  statement_id  = "AllowExecutionFromALB"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.app.function_name
-  principal     = "elasticloadbalancing.amazonaws.com"
+# EKS Node Group
+resource "aws_iam_role" "eks_node_role" {
+  name = "${var.project_name}-eks-node-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+    }]
+  })
 }
 
-# Lambda function zip file placeholder
-data "archive_file" "lambda_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/lambda"
-  output_path = "${path.module}/lambda_function.zip"
+resource "aws_iam_role_policy_attachment" "eks_node_policy" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
 }
 
-resource "null_resource" "lambda_zip" {
-  provisioner "local-exec" {
-    command = "mkdir -p ${path.module}/lambda && echo 'def handler(event, context): return {\"statusCode\": 200, \"body\": \"Hello from Lambda\"}' > ${path.module}/lambda/index.py"
+resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+}
+
+resource "aws_iam_role_policy_attachment" "eks_registry_policy" {
+  role       = aws_iam_role.eks_node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+resource "aws_eks_node_group" "main" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.project_name}-node-group"
+  node_role_arn   = aws_iam_role.eks_node_role.arn
+  subnet_ids      = aws_subnet.private[*].id
+
+  scaling_config {
+    desired_size = 2
+    max_size     = 4
+    min_size     = 1
+  }
+
+  instance_types = [var.eks_instance_type]
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_node_policy,
+    aws_iam_role_policy_attachment.eks_cni_policy,
+    aws_iam_role_policy_attachment.eks_registry_policy,
+  ]
+
+  tags = {
+    Name = "${var.project_name}-node-group"
   }
 }
 
@@ -353,20 +414,20 @@ resource "aws_cloudwatch_log_group" "app" {
   }
 }
 
-resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
-  alarm_name          = "${var.project_name}-lambda-errors"
-  comparison_operator = "GreaterThanThreshold"
+resource "aws_cloudwatch_metric_alarm" "eks_nodes" {
+  alarm_name          = "${var.project_name}-eks-nodes"
+  comparison_operator = "LessThanThreshold"
   evaluation_periods  = 1
-  metric_name         = "Errors"
-  namespace           = "AWS/Lambda"
+  metric_name         = "NodeCount"
+  namespace           = "AWS/EKS"
   period              = 300
-  statistic           = "Sum"
-  threshold           = 5
-  alarm_description   = "Alert when Lambda function errors exceed 5"
+  statistic           = "Average"
+  threshold           = 1
+  alarm_description   = "Alert when EKS node count drops below 1"
   treat_missing_data  = "notBreaching"
 
   dimensions = {
-    FunctionName = aws_lambda_function.app.function_name
+    ClusterName = aws_eks_cluster.main.name
   }
 }
 

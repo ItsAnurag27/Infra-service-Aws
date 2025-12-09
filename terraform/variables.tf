@@ -72,6 +72,12 @@ variable "ec2_instance_type" {
   default     = "t3.micro"
 }
 
+variable "eks_instance_type" {
+  description = "EKS node instance type"
+  type        = string
+  default     = "t3.medium"
+}
+
 variable "skip_final_snapshot" {
   description = "Skip final snapshot when destroying RDS"
   type        = bool
