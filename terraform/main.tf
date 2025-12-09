@@ -119,6 +119,70 @@ resource "aws_security_group" "ec2" {
     description = "HTTPS access"
   }
 
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Jenkins access"
+  }
+
+  ingress {
+    from_port   = 9080
+    to_port     = 9093
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "Docker services: NGINX, APACHE, BUSYBOX, MEMCACHED, ALPINE, REDIS, POSTGRES, MYSQL, RABBITMQ, PROMETHEUS, GITLAB"
+  }
+
+  ingress {
+    from_port   = 3000
+    to_port     = 3001
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "APP and GRAFANA services"
+  }
+
+  ingress {
+    from_port   = 5000
+    to_port     = 5000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "DOCKER_REGISTRY service"
+  }
+
+  ingress {
+    from_port   = 8001
+    to_port     = 8002
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "JENKINS custom and PORTAINER services"
+  }
+
+  ingress {
+    from_port   = 8200
+    to_port     = 8200
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "VAULT service"
+  }
+
+  ingress {
+    from_port   = 8500
+    to_port     = 8500
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "CONSUL service"
+  }
+
+  ingress {
+    from_port   = 2379
+    to_port     = 2379
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "ETCD service"
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -153,11 +217,227 @@ resource "aws_instance" "app" {
 
   user_data = base64encode(<<-EOF
     #!/bin/bash
+    set -e
+    
+    # Update system packages
     yum update -y
-    yum install -y httpd
-    systemctl start httpd
-    systemctl enable httpd
-    echo "<h1>Hello from ${var.project_name} - Instance $(hostname -f)</h1>" > /var/www/html/index.html
+    yum install -y java-17-amazon-corretto-headless git curl wget
+    
+    # Add Jenkins repository
+    wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
+    rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key
+    
+    # Install Jenkins
+    yum install -y jenkins
+    
+    # Enable and start Jenkins service
+    systemctl enable jenkins
+    systemctl start jenkins
+    
+    # Wait for Jenkins to be ready
+    sleep 30
+    
+    # Get Jenkins initial admin password
+    JENKINS_PASSWORD=$(cat /var/lib/jenkins/secrets/initialAdminPassword 2>/dev/null || echo "")
+    
+    # Create Jenkins configuration to skip wizard
+    mkdir -p /var/lib/jenkins
+    
+    # Set up Jenkins to skip setup wizard
+    cat > /var/lib/jenkins/jenkins.install.UpgradeWizard.state <<'JENKINS_CONFIG'
+    2.414
+    JENKINS_CONFIG
+    
+    # Create initial Jenkins user (admin:admin)
+    cat > /var/lib/jenkins/users/admin/config.xml <<'JENKINS_USER'
+    <?xml version='1.1' encoding='UTF-8'?>
+    <hudson.model.User>
+      <id>admin</id>
+      <fullName>Administrator</fullName>
+      <properties>
+        <hudson.security.HudsonPrivateSecurityRealm_-Details>
+          <passwordHash>#jbcrypt:$2a$10$yYjSW8kVZXSGOQaX4bxPxuREH7ZfvFDMcIwE.kfh0GBHfXiJBcuBe</passwordHash>
+        </hudson.security.HudsonPrivateSecurityRealm_-Details>
+        <jenkins.security.ApiTokenProperty>
+          <tokenStore>
+            <map class="hudson.util.CopyOnWriteMap$Hash"/>
+          </tokenStore>
+        </jenkins.security.ApiTokenProperty>
+      </properties>
+    </hudson.model.User>
+    JENKINS_USER
+    
+    # Set proper permissions
+    chown -R jenkins:jenkins /var/lib/jenkins
+    chmod -R 755 /var/lib/jenkins
+    
+    # Restart Jenkins to apply configuration
+    systemctl restart jenkins
+    
+    # Wait for Jenkins to fully start
+    sleep 30
+    
+    # Install Jenkins CLI and manage plugins
+    JENKINS_URL="http://localhost:8080"
+    
+    # Function to wait for Jenkins to be ready
+    wait_for_jenkins() {
+      for i in {1..60}; do
+        if curl -s "$JENKINS_URL/cli/" > /dev/null 2>&1; then
+          return 0
+        fi
+        sleep 2
+      done
+      return 1
+    }
+    
+    # Wait for Jenkins to be ready
+    wait_for_jenkins
+    
+    # Download Jenkins CLI
+    curl -o /tmp/jenkins-cli.jar "$JENKINS_URL/jnlpJars/jenkins-cli.jar"
+    
+    # Install essential plugins using Jenkins CLI
+    java -jar /tmp/jenkins-cli.jar -s "$JENKINS_URL" -auth admin:admin install-plugin \
+      pipeline-model-definition \
+      pipeline-stage-view \
+      git \
+      github \
+      docker-plugin \
+      docker-pipeline \
+      ws-cleanup \
+      credentials \
+      ssh-agent \
+      sonar \
+      -restart
+    
+    # Wait for plugins to install
+    sleep 20
+    
+    # Restart Jenkins
+    systemctl restart jenkins
+    
+    # Wait for Jenkins to be fully ready
+    sleep 30
+    
+    # Create GitHub credentials in Jenkins
+    GITHUB_TOKEN="${var.github_token}"
+    GITHUB_USER="${var.github_username}"
+    
+    if [ ! -z "$GITHUB_TOKEN" ] && [ ! -z "$GITHUB_USER" ]; then
+      # Create GitHub credentials XML
+      cat > /tmp/create_credentials.groovy <<'GITHUB_CREDS'
+def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
+def domain = com.cloudbees.plugins.credentials.domains.Domain.global()
+
+def cred = new org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl(
+  CredentialsScope.GLOBAL,
+  "github-token",
+  "GitHub Token",
+  SecretBytes.fromString("${GITHUB_TOKEN}")
+)
+
+store.addCredentials(domain, cred)
+Jenkins.instance.save()
+
+// Also create GitHub credentials with username
+def githubCred = new com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl(
+  CredentialsScope.GLOBAL,
+  "github-credentials",
+  "GitHub Credentials",
+  "${GITHUB_USER}",
+  "${GITHUB_TOKEN}"
+)
+
+store.addCredentials(domain, githubCred)
+Jenkins.instance.save()
+
+println "GitHub credentials created successfully"
+GITHUB_CREDS
+
+      # Create a script to run Groovy in Jenkins
+      java -jar /tmp/jenkins-cli.jar -s "http://localhost:8080" -auth admin:admin groovy = < /tmp/create_credentials.groovy || true
+    fi
+    
+    # Generate SSH key pair for Jenkins to EC2 deployment (jenkins-key)
+    echo "Generating SSH key pair for Jenkins pipeline..."
+    mkdir -p /var/lib/jenkins/.ssh
+    
+    # Generate RSA key pair
+    ssh-keygen -t rsa -b 4096 -f /var/lib/jenkins/.ssh/jenkins-key -N "" -C "jenkins@15-services"
+    
+    # Get the public key
+    JENKINS_PUB_KEY=$(cat /var/lib/jenkins/.ssh/jenkins-key.pub)
+    
+    # Add public key to authorized_keys for ec2-user
+    mkdir -p /home/ec2-user/.ssh
+    echo "$JENKINS_PUB_KEY" >> /home/ec2-user/.ssh/authorized_keys
+    chmod 600 /home/ec2-user/.ssh/authorized_keys
+    chmod 700 /home/ec2-user/.ssh
+    
+    # Set proper permissions for Jenkins SSH key
+    chmod 600 /var/lib/jenkins/.ssh/jenkins-key
+    chmod 644 /var/lib/jenkins/.ssh/jenkins-key.pub
+    chown -R jenkins:jenkins /var/lib/jenkins/.ssh
+    
+    # Create SSH credentials in Jenkins using Groovy
+    cat > /tmp/create_ssh_credentials.groovy <<'SSH_CREDS'
+def store = Jenkins.instance.getExtensionList('com.cloudbees.plugins.credentials.SystemCredentialsProvider')[0].getStore()
+def domain = com.cloudbees.plugins.credentials.domains.Domain.global()
+
+// Read the private key
+def keyFile = new File("/var/lib/jenkins/.ssh/jenkins-key")
+def privateKey = keyFile.text
+
+// Create SSH key credential
+def sshCred = new com.cloudbees.jenkins.plugins.kubernetes.credentials.OpenShiftBearerTokenCredentialImpl(
+  CredentialsScope.GLOBAL,
+  "jenkins-key",
+  "Jenkins SSH Key for EC2",
+  SecretBytes.fromString(privateKey)
+)
+
+// Use BasicSSHUserPrivateKey instead
+def sshKey = new hudson.util.Secret(privateKey)
+def keySource = new com.cloudbees.jenkins.plugins.kubernetes.credentials.impl.BasicSSHUserPrivateKey(
+  CredentialsScope.GLOBAL,
+  "jenkins-key",
+  "ec2-user",
+  new com.cloudbees.jenkins.plugins.kubernetes.credentials.impl.BasicSSHUserPrivateKey.DirectEntryPrivateKeySource(sshKey),
+  "",
+  "Jenkins SSH Key for EC2"
+)
+
+store.addCredentials(domain, keySource)
+Jenkins.instance.save()
+
+println "SSH credentials created successfully"
+SSH_CREDS
+
+    # Run the Groovy script to create SSH credentials
+    java -jar /tmp/jenkins-cli.jar -s "http://localhost:8080" -auth admin:admin groovy = < /tmp/create_ssh_credentials.groovy || true
+    
+    # Wait for credentials to be created
+    sleep 5
+    
+    # Restart Jenkins to ensure credentials are loaded
+    systemctl restart jenkins
+    sleep 20
+    
+    # Allow HTTP traffic on port 8080
+    cat > /etc/yum.repos.d/amazon-linux-extras.repo <<'FIREWALL'
+    [amazon-linux-extras]
+    name=Amazon Linux Extras
+    baseurl=https://cdn.amazonlinux.com/data/extras/repo/2/x86_64/latest/
+    enabled=1
+    gpgcheck=1
+    gpgkey=https://amazon-linux-ami.s3.amazonaws.com/RPM-GPG-KEY-amazon-linux-extras
+    FIREWALL
+    
+    echo "Jenkins installation and setup completed!"
+    echo "Jenkins URL: $JENKINS_URL"
+    echo "Username: admin"
+    echo "Password: admin"
   EOF
   )
 

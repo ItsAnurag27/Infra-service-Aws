@@ -45,3 +45,16 @@ variable "elastic_ip_allocation_id" {
   type        = string
   default     = ""
 }
+
+variable "github_token" {
+  description = "GitHub personal access token for cloning private repositories"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "github_username" {
+  description = "GitHub username for credentials in Jenkins"
+  type        = string
+  default     = ""
+}

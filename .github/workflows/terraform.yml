@@ -12,6 +12,8 @@ on:
 
 env:
   TERRAFORM_VERSION: 1.6.0
+  TF_VAR_github_token: ${{ secrets.DOCKER_GITHUB_TOKEN }}
+  TF_VAR_github_username: ${{ secrets.DOCKER_GITHUB_USERNAME }}
 
 jobs:
   terraform-plan:

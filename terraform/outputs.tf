@@ -68,3 +68,34 @@ output "ec2_names" {
   description = "EC2 instance names"
   value       = aws_instance.app[*].tags.Name
 }
+
+output "jenkins_url" {
+  description = "Jenkins access URL"
+  value       = try("http://${aws_instance.app[0].public_ip}:8080", "Not available")
+}
+
+output "jenkins_elastic_ip_url" {
+  description = "Jenkins URL using Elastic IP (if configured)"
+  value       = try("http://44.215.75.53:8080", "Configure elastic_ip_allocation_id")
+}
+
+output "jenkins_credentials" {
+  description = "Jenkins default credentials"
+  value       = "Username: admin | Password: admin"
+  sensitive   = true
+}
+
+output "jenkins_github_credentials_id" {
+  description = "Jenkins GitHub credentials ID"
+  value       = "github-credentials (or use 'github-token' for API token)"
+}
+
+output "jenkins_ssh_key_location" {
+  description = "Location of SSH private key on EC2 for Jenkins deployment"
+  value       = "/var/lib/jenkins/.ssh/jenkins-key"
+}
+
+output "jenkins_deployment_note" {
+  description = "Important: Update your Docker repo Jenkinsfile with this EC2 IP"
+  value       = "Update EC2_IP in Jenkinsfile to: 44.215.75.53 (your Elastic IP)"
+}
