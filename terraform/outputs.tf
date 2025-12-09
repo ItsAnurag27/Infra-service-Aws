@@ -99,3 +99,19 @@ output "jenkins_deployment_note" {
   description = "Important: Update your Docker repo Jenkinsfile with this EC2 IP"
   value       = "Update EC2_IP in Jenkinsfile to: 44.215.75.53 (your Elastic IP)"
 }
+
+output "elastic_ip_address" {
+  description = "Elastic IP address associated with EC2 instance"
+  value       = try(
+    var.elastic_ip_allocation_id != "" ? "Already allocated: 44.215.75.53" : aws_eip.app[0].public_ip,
+    "Check AWS Console for EIP status"
+  )
+}
+
+output "elastic_ip_allocation_id" {
+  description = "Elastic IP allocation ID"
+  value       = try(
+    var.elastic_ip_allocation_id != "" ? var.elastic_ip_allocation_id : aws_eip.app[0].id,
+    "No EIP configured"
+  )
+}
