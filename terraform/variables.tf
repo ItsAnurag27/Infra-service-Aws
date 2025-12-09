@@ -39,3 +39,9 @@ variable "iam_username" {
   type        = string
   default     = "app-user"
 }
+
+variable "elastic_ip_allocation_id" {
+  description = "Allocation ID of the Elastic IP to associate with EC2 instance"
+  type        = string
+  default     = ""
+}

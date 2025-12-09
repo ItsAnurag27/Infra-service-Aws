@@ -58,3 +58,13 @@ output "iam_access_key_id" {
   value       = aws_iam_access_key.app_user.id
   sensitive   = true
 }
+
+output "ec2_elastic_ip_association" {
+  description = "Elastic IP association with EC2 instance"
+  value       = try(aws_eip_association.app[0].association_id, "Not associated")
+}
+
+output "ec2_names" {
+  description = "EC2 instance names"
+  value       = aws_instance.app[*].tags.Name
+}

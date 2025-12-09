@@ -162,10 +162,17 @@ resource "aws_instance" "app" {
   )
 
   tags = {
-    Name = "${var.project_name}-instance-${count.index + 1}"
+    Name = "15-services-${count.index + 1}"
   }
 
   depends_on = [aws_internet_gateway.main]
+}
+
+# Associate Elastic IP with first EC2 instance
+resource "aws_eip_association" "app" {
+  count         = var.ec2_instance_count > 0 ? 1 : 0
+  instance_id   = aws_instance.app[0].id
+  allocation_id = var.elastic_ip_allocation_id
 }
 
 # SERVICE 4: S3 Bucket for Storage
