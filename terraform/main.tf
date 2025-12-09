@@ -334,7 +334,7 @@ def cred = new org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl
   CredentialsScope.GLOBAL,
   "github-token",
   "GitHub Token",
-  SecretBytes.fromString("${GITHUB_TOKEN}")
+  SecretBytes.fromString("GITHUB_TOKEN_PLACEHOLDER")
 )
 
 store.addCredentials(domain, cred)
@@ -345,8 +345,8 @@ def githubCred = new com.cloudbees.plugins.credentials.impl.UsernamePasswordCred
   CredentialsScope.GLOBAL,
   "github-credentials",
   "GitHub Credentials",
-  "${GITHUB_USER}",
-  "${GITHUB_TOKEN}"
+  "GITHUB_USER_PLACEHOLDER",
+  "GITHUB_TOKEN_PLACEHOLDER"
 )
 
 store.addCredentials(domain, githubCred)
@@ -354,6 +354,10 @@ Jenkins.instance.save()
 
 println "GitHub credentials created successfully"
 GITHUB_CREDS
+
+      # Replace placeholders with actual values
+      sed -i "s|GITHUB_TOKEN_PLACEHOLDER|$GITHUB_TOKEN|g" /tmp/create_credentials.groovy
+      sed -i "s|GITHUB_USER_PLACEHOLDER|$GITHUB_USER|g" /tmp/create_credentials.groovy
 
       # Create a script to run Groovy in Jenkins
       java -jar /tmp/jenkins-cli.jar -s "http://localhost:8080" -auth admin:admin groovy = < /tmp/create_credentials.groovy || true
