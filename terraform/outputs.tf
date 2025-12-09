@@ -61,7 +61,7 @@ output "iam_access_key_id" {
 
 output "ec2_elastic_ip_association" {
   description = "Elastic IP association with EC2 instance"
-  value       = try(aws_eip_association.app[0].association_id, "Not associated")
+  value       = try(aws_eip_association.app[0].id, "Not associated")
 }
 
 output "ec2_names" {
