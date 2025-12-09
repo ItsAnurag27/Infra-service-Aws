@@ -454,9 +454,11 @@ SSH_CREDS
 
 # Associate Elastic IP with first EC2 instance
 resource "aws_eip_association" "app" {
-  count         = var.ec2_instance_count > 0 ? 1 : 0
+  count         = var.ec2_instance_count > 0 && var.elastic_ip_allocation_id != "" ? 1 : 0
   instance_id   = aws_instance.app[0].id
   allocation_id = var.elastic_ip_allocation_id
+
+  depends_on = [aws_instance.app]
 }
 
 # SERVICE 4: S3 Bucket for Storage
