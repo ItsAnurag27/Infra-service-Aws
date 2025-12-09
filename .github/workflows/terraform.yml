@@ -5,15 +5,10 @@ on:
     branches:
       - main
       - develop
-    paths:
-      - 'terraform/**'
-      - '.github/workflows/terraform.yml'
   pull_request:
     branches:
       - main
       - develop
-    paths:
-      - 'terraform/**'
 
 env:
   TERRAFORM_VERSION: 1.6.0
