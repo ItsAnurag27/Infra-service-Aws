@@ -3,15 +3,19 @@ output "vpc_id" {
   value       = aws_vpc.main.id
 }
 
-output "rds_endpoint" {
-  description = "EKS Cluster Name"
-  value       = aws_eks_cluster.main.name
-  sensitive   = false
+output "public_subnet_ids" {
+  description = "Public subnet IDs"
+  value       = aws_subnet.public[*].id
 }
 
-output "rds_database_name" {
-  description = "EKS Cluster Endpoint"
-  value       = aws_eks_cluster.main.endpoint
+output "security_group_id" {
+  description = "EC2 Security Group ID"
+  value       = aws_security_group.ec2.id
+}
+
+output "security_group_name" {
+  description = "EC2 Security Group Name"
+  value       = aws_security_group.ec2.name
 }
 
 output "s3_bucket_name" {
@@ -19,9 +23,9 @@ output "s3_bucket_name" {
   value       = aws_s3_bucket.app_storage.id
 }
 
-output "elasticache_endpoint" {
-  description = "ElastiCache cluster endpoint"
-  value       = "N/A - ElastiCache removed"
+output "s3_bucket_arn" {
+  description = "S3 bucket ARN"
+  value       = aws_s3_bucket.app_storage.arn
 }
 
 output "ec2_instance_ids" {
@@ -29,27 +33,28 @@ output "ec2_instance_ids" {
   value       = aws_instance.app[*].id
 }
 
-output "ec2_private_ips" {
+output "ec2_instance_public_ips" {
+  description = "EC2 instance public IP addresses"
+  value       = aws_instance.app[*].public_ip
+}
+
+output "ec2_instance_private_ips" {
   description = "EC2 instance private IP addresses"
   value       = aws_instance.app[*].private_ip
 }
 
-output "alb_dns_name" {
-  description = "Application Load Balancer DNS name"
-  value       = aws_lb.main.dns_name
+output "iam_user_name" {
+  description = "IAM user name"
+  value       = aws_iam_user.app_user.name
 }
 
-output "alb_arn" {
-  description = "Application Load Balancer ARN"
-  value       = aws_lb.main.arn
+output "iam_user_arn" {
+  description = "IAM user ARN"
+  value       = aws_iam_user.app_user.arn
 }
 
-output "target_group_arn" {
-  description = "Target Group ARN"
-  value       = aws_lb_target_group.app.arn
-}
-
-output "cloudwatch_log_group" {
-  description = "CloudWatch Log Group name"
-  value       = aws_cloudwatch_log_group.app.name
+output "iam_access_key_id" {
+  description = "IAM user access key ID"
+  value       = aws_iam_access_key.app_user.id
+  sensitive   = true
 }
