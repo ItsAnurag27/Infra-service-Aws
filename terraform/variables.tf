@@ -70,3 +70,9 @@ variable "ec2_instance_type" {
   type        = string
   default     = "t3.micro"
 }
+
+variable "skip_final_snapshot" {
+  description = "Skip final snapshot when destroying RDS"
+  type        = bool
+  default     = false
+}

@@ -123,7 +123,7 @@ resource "aws_security_group" "rds" {
   }
 }
 
-resource "aws_rds_instance" "postgres" {
+resource "aws_db_instance" "postgres" {
   identifier            = "${var.project_name}-postgres-db"
   engine                = "postgres"
   engine_version        = "15.4"
@@ -133,7 +133,6 @@ resource "aws_rds_instance" "postgres" {
   db_name               = var.rds_database_name
   username              = var.rds_username
   password              = var.rds_password
-  skip_final_snapshot   = var.skip_final_snapshot
   publicly_accessible   = false
   
   db_subnet_group_name            = aws_db_subnet_group.main.name
@@ -141,7 +140,6 @@ resource "aws_rds_instance" "postgres" {
   backup_retention_period         = 7
   backup_window                   = "03:00-04:00"
   maintenance_window              = "mon:04:00-mon:05:00"
-  enable_cloudwatch_logs_exports  = ["postgresql"]
 
   tags = {
     Name = "${var.project_name}-postgres"
