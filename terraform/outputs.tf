@@ -4,14 +4,14 @@ output "vpc_id" {
 }
 
 output "rds_endpoint" {
-  description = "RDS database endpoint"
-  value       = aws_rds_instance.postgres.endpoint
-  sensitive   = true
+  description = "Lambda function ARN"
+  value       = aws_lambda_function.app.arn
+  sensitive   = false
 }
 
 output "rds_database_name" {
-  description = "RDS database name"
-  value       = aws_rds_instance.postgres.db_name
+  description = "Lambda function name"
+  value       = aws_lambda_function.app.function_name
 }
 
 output "s3_bucket_name" {

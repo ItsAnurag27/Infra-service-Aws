@@ -51,6 +51,7 @@ variable "rds_password" {
   description = "RDS master password"
   type        = string
   sensitive   = true
+  default     = "DefaultPassword123!"
 }
 
 variable "elasticache_node_type" {
