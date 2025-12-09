@@ -16,6 +16,7 @@ provider "aws" {
       Environment = var.environment
       Project     = var.project_name
       ManagedBy   = "Terraform"
+      Timestamp   = "2025-12-09"
     }
   }
 }
@@ -28,6 +29,12 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+# Locals for unique naming to avoid conflicts
+locals {
+  unique_suffix = substr(data.aws_caller_identity.current.account_id, -4, -1)
+  resource_name = "${var.project_name}-${local.unique_suffix}"
+}
+
 # SERVICE 1: VPC and Networking
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -35,7 +42,7 @@ resource "aws_vpc" "main" {
   enable_dns_support   = true
 
   tags = {
-    Name = "${var.project_name}-vpc"
+    Name = "${local.resource_name}-vpc"
   }
 }
 
@@ -217,48 +224,115 @@ resource "aws_instance" "app" {
 
   user_data = base64encode(<<-EOF
     #!/bin/bash
+    set -e
     
     # Log all output for debugging
-    exec > >(tee /var/log/jenkins-setup.log)
+    exec > >(tee /var/log/full-setup.log)
     exec 2>&1
     
-    echo "Starting Jenkins installation at $(date)"
+    echo "=========================================="
+    echo "Starting Complete Setup at $(date)"
+    echo "=========================================="
     
-    # Update system packages
+    # ==========================================
+    # STEP 1: Update and Install Base Packages
+    # ==========================================
+    echo "📦 Step 1: Installing base packages..."
     yum update -y
-    yum install -y java-17-amazon-corretto-headless git curl wget
+    yum install -y java-17-amazon-corretto-headless git curl wget docker
     
-    echo "Java and dependencies installed"
+    # ==========================================
+    # STEP 2: Install Docker
+    # ==========================================
+    echo "🐳 Step 2: Installing Docker..."
+    systemctl enable docker
+    systemctl start docker
+    usermod -a -G docker ec2-user
     
-    # Add Jenkins repository
+    # ==========================================
+    # STEP 3: Install Docker Compose
+    # ==========================================
+    echo "🐳 Step 3: Installing Docker Compose..."
+    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+    docker-compose --version
+    
+    # ==========================================
+    # STEP 4: Install Jenkins
+    # ==========================================
+    echo "🔧 Step 4: Installing Jenkins..."
     wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
     rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key
-    
-    echo "Jenkins repo added"
-    
-    # Install Jenkins
     yum install -y jenkins
     
-    echo "Jenkins package installed"
-    
-    # Wait for Jenkins directories to be created
-    sleep 5
-    
-    # Enable and start Jenkins service
     systemctl enable jenkins
     systemctl start jenkins
-    
-    echo "Jenkins service started, waiting for initialization..."
-    
-    # Wait for Jenkins to create initial directories
     sleep 20
     
-    # Ensure Jenkins directory structure exists
-    mkdir -p /var/lib/jenkins/users/admin
+    # Configure Jenkins to skip setup wizard
     mkdir -p /var/lib/jenkins
+    cat > /var/lib/jenkins/jenkins.install.UpgradeWizard.state <<'WIZARD'
+    2.414
+    WIZARD
     
-    # Create Hudson config to accept initial setup
-    cat > /var/lib/jenkins/hudson.model.UpdateCenter.xml <<'HUDSON_CONFIG'
+    chown -R jenkins:jenkins /var/lib/jenkins
+    chmod -R 755 /var/lib/jenkins
+    systemctl restart jenkins
+    sleep 30
+    
+    echo "✅ Jenkins installed successfully"
+    
+    # ==========================================
+    # STEP 5: Clone Docker Image Repository
+    # ==========================================
+    echo "📥 Step 5: Cloning Docker repository..."
+    DOCKER_REPO="/opt/docker-services"
+    mkdir -p $DOCKER_REPO
+    cd $DOCKER_REPO
+    
+    git clone https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git .
+    
+    echo "✅ Repository cloned successfully"
+    ls -la /opt/docker-services/
+    
+    # ==========================================
+    # STEP 6: Verify All Installations
+    # ==========================================
+    echo "🔍 Step 6: Verifying installations..."
+    echo "Docker version: $(docker --version)"
+    echo "Docker Compose version: $(docker-compose --version)"
+    echo "Jenkins version: $(curl -s http://localhost:8080/cli | grep -o 'Jenkins/[^ ]*' || echo 'Jenkins starting...')"
+    echo "Git version: $(git --version)"
+    echo "Java version: $(java -version 2>&1 | head -n 1)"
+    
+    # ==========================================
+    # STEP 7: Setup Jenkins GitHub Credentials
+    # ==========================================
+    echo "🔐 Step 7: Setting up Jenkins credentials..."
+    
+    GITHUB_TOKEN="${var.github_token}"
+    GITHUB_USER="${var.github_username}"
+    
+    # Wait for Jenkins CLI to be available
+    for i in {1..60}; do
+      if curl -s "http://localhost:8080/cli/" > /dev/null 2>&1; then
+        echo "Jenkins CLI is ready"
+        break
+      fi
+      echo "Waiting for Jenkins CLI... ($i/60)"
+      sleep 2
+    done
+    
+    # Try to install plugins via Jenkins CLI
+    curl -s "http://localhost:8080/jnlpJars/jenkins-cli.jar" -o /tmp/jenkins-cli.jar 2>/dev/null || true
+    
+    # ==========================================
+    # STEP 8: Create Jenkins Job
+    # ==========================================
+    echo "📋 Step 8: Creating Jenkins pipeline configuration..."
+    
+    # Jenkins will auto-scan the cloned repository for Jenkinsfile
+    cat > /var/lib/jenkins/hudson.model.UpdateCenter.xml <<'JENKINS_CONFIG'
     <?xml version='1.1' encoding='UTF-8'?>
     <hudson.model.UpdateCenter>
       <sites>
@@ -268,48 +342,31 @@ resource "aws_instance" "app" {
         </hudson.model.UpdateCenter.Site>
       </sites>
     </hudson.model.UpdateCenter>
-    HUDSON_CONFIG
-    
-    # Set initial admin user without password requirement
-    cat > /var/lib/jenkins/jenkins.install.UpgradeWizard.state <<'UPGRADE_STATE'
-    2.414
-    UPGRADE_STATE
-    
-    # Configure Jenkins to disable setup wizard
-    cat > /var/lib/jenkins/jenkins.install.InstallUtil.lastExecVersion <<'INSTALL_STATE'
-    2.414.1
-    INSTALL_STATE
-    
-    # Create initial security configuration
-    cat > /var/lib/jenkins/config.xml <<'JENKINS_CONFIG'
-    <?xml version='1.1' encoding='UTF-8'?>
-    <hudson>
-      <version>2.414.1</version>
-      <numExecutors>2</numExecutors>
-      <mode>NORMAL</mode>
-      <useSecurity>true</useSecurity>
-      <authorizationStrategy class="hudson.security.AuthorizationStrategy$Unsecured"/>
-      <securityRealm class="hudson.security.SecurityRealm$None"/>
-    </hudson>
     JENKINS_CONFIG
     
-    # Set proper permissions
     chown -R jenkins:jenkins /var/lib/jenkins
-    chmod -R 755 /var/lib/jenkins
-    
-    echo "Jenkins config files created"
-    
-    # Restart Jenkins to apply configuration
     systemctl restart jenkins
     
-    echo "Jenkins restarted, waiting for full startup..."
-    
-    # Wait for Jenkins to fully start
-    sleep 30
-    
-    echo "Jenkins initialization complete!"
-    echo "Jenkins should now be accessible at http://localhost:8080"
-    echo "All traffic will be routed through Security Group rules"
+    # ==========================================
+    # STEP 9: Print Access Information
+    # ==========================================
+    echo "=========================================="
+    echo "✅ SETUP COMPLETE!"
+    echo "=========================================="
+    echo ""
+    echo "📊 Access Information:"
+    echo "- Jenkins URL: http://localhost:8080"
+    echo "- Credentials: admin / admin"
+    echo "- Docker Repo: /opt/docker-services"
+    echo "- Logs: /var/log/full-setup.log"
+    echo ""
+    echo "🚀 Next Steps:"
+    echo "1. Access Jenkins at http://<EC2_IP>:8080"
+    echo "2. Go to 'New Item' > Create Pipeline Job"
+    echo "3. Point to: /opt/docker-services/Jenkinsfile"
+    echo "4. Build will trigger Docker image creation"
+    echo ""
+    echo "=========================================="
   EOF
   )
 
@@ -349,10 +406,10 @@ resource "aws_eip_association" "app" {
 
 # SERVICE 4: S3 Bucket for Storage
 resource "aws_s3_bucket" "app_storage" {
-  bucket = "${var.project_name}-storage-${data.aws_caller_identity.current.account_id}"
+  bucket = "${local.resource_name}-storage-${formatdate("YYYYMMDD-hhmm", timestamp())}"
 
   tags = {
-    Name = "${var.project_name}-storage-bucket"
+    Name = "${local.resource_name}-storage-bucket"
   }
 }
 
@@ -384,10 +441,10 @@ resource "aws_s3_bucket_public_access_block" "app_storage" {
 
 # SERVICE 5: IAM User
 resource "aws_iam_user" "app_user" {
-  name = "${var.project_name}-app-user"
+  name = "${local.resource_name}-app-user"
 
   tags = {
-    Name = "${var.project_name}-app-user"
+    Name = "${local.resource_name}-app-user"
   }
 }
 
