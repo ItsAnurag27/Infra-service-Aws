@@ -3,12 +3,12 @@ name: Terraform Deploy AWS Services
 on:
   push:
     branches:
-      - disabled_main
-      - disabled_develop
+      - main
+      - develop
   pull_request:
     branches:
-      - disabled_main
-      - disabled_develop
+      - main
+      - develop
 
 env:
   TERRAFORM_VERSION: 1.6.0
