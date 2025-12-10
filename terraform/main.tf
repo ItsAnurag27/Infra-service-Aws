@@ -48,51 +48,48 @@ data "aws_security_groups" "existing_sg" {
 # Get existing subnets from the VPC (if VPC exists)
 data "aws_subnets" "existing_public" {
   count = length(data.aws_vpcs.existing_vpc.ids) > 0 ? 1 : 0
-  
+
   filter {
     name   = "vpc-id"
     values = [data.aws_vpcs.existing_vpc.ids[0]]
   }
-  
+
   filter {
     name   = "tag:Name"
     values = ["${var.project_name}-*-public-subnet"]
   }
 }
 
-# Note: S3 bucket existence will be checked via try() during creation
-# No data source needed here - S3 creation will fail gracefully if bucket exists
-
 # Check if Elastic IP is already associated with an EC2 instance
 data "aws_eip" "existing" {
-  count             = var.elastic_ip_allocation_id != "" ? 1 : 0
-  id                = var.elastic_ip_allocation_id
+  count = var.elastic_ip_allocation_id != "" ? 1 : 0
+  id    = var.elastic_ip_allocation_id
 }
 
 # Locals for unique naming to avoid conflicts
 locals {
-  unique_suffix            = substr(data.aws_caller_identity.current.account_id, -4, -1)
-  resource_name            = "${var.project_name}-${local.unique_suffix}"
-  
+  unique_suffix  = substr(data.aws_caller_identity.current.account_id, -4, -1)
+  resource_name  = "${var.project_name}-${local.unique_suffix}"
+
   # Skip VPC creation if it already exists
-  vpc_exists               = length(data.aws_vpcs.existing_vpc.ids) > 0
-  should_create_vpc        = !local.vpc_exists
-  
+  vpc_exists         = length(data.aws_vpcs.existing_vpc.ids) > 0
+  should_create_vpc  = !local.vpc_exists
+
   # Check if Security Group already exists
-  sg_exists                = length(data.aws_security_groups.existing_sg.ids) > 0
-  should_create_sg         = !local.sg_exists && local.should_create_vpc
-  
+  sg_exists        = length(data.aws_security_groups.existing_sg.ids) > 0
+  should_create_sg = !local.sg_exists && local.should_create_vpc
+
   # S3 bucket will attempt creation; AWS will error if it exists
-  s3_bucket_name           = "${var.project_name}-${local.unique_suffix}-storage"
-  should_create_s3         = true  # Will fail gracefully if bucket exists
-  
+  s3_bucket_name  = "${var.project_name}-${local.unique_suffix}-storage"
+  should_create_s3 = true
+
   # Skip EC2 creation if EIP is already associated with an instance
-  skip_ec2_creation        = var.elastic_ip_allocation_id != "" && try(data.aws_eip.existing[0].instance_id != "", false)
-  should_create_ec2        = !local.skip_ec2_creation
-  
-  # Skip IAM user creation if it already exists (use simple try/catch to avoid permissions issues)
-  iam_user_exists          = false  # Will be checked differently below
-  should_create_iam_user   = true   # Allow attempts; AWS will error if it exists
+  skip_ec2_creation = var.elastic_ip_allocation_id != "" && try(data.aws_eip.existing[0].instance_id != "", false)
+  should_create_ec2 = !local.skip_ec2_creation
+
+  # Skip IAM user creation if it already exists (simplified)
+  iam_user_exists        = false
+  should_create_iam_user = true
 }
 
 # SERVICE 1: VPC and Networking
@@ -144,8 +141,8 @@ resource "aws_route_table" "public" {
   vpc_id = aws_vpc.main[0].id
 
   route {
-    cidr_block      = "0.0.0.0/0"
-    gateway_id      = aws_internet_gateway.main[0].id
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main[0].id
   }
 
   tags = {
@@ -296,28 +293,28 @@ resource "aws_instance" "app" {
   user_data = base64encode(<<-EOF
     #!/bin/bash
     set -e
-    
+
     # Log all output for debugging
     exec > >(tee /var/log/full-setup.log)
     exec 2>&1
-    
+
     echo "=========================================="
     echo "Starting Complete Setup at $(date)"
     echo "=========================================="
-    
+
     # ==========================================
     # STEP 1: Update and Install Base Packages
     # ==========================================
     echo "📦 Step 1: Installing base packages..."
     yum update -y
     yum install -y java-17-amazon-corretto-headless git curl wget docker
-    
+
     if ! command -v java &> /dev/null; then
       echo "❌ Java installation failed!"
       exit 1
     fi
     echo "✅ Java installed: $(java -version 2>&1 | head -n 1)"
-    
+
     # ==========================================
     # STEP 2: Install Docker
     # ==========================================
@@ -327,7 +324,7 @@ resource "aws_instance" "app" {
     sleep 5
     usermod -a -G docker ec2-user
     echo "✅ Docker started: $(docker --version)"
-    
+
     # ==========================================
     # STEP 3: Install Docker Compose
     # ==========================================
@@ -335,73 +332,66 @@ resource "aws_instance" "app" {
     curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
     echo "✅ Docker Compose installed: $(docker-compose --version)"
-    
+
     # ==========================================
-    # STEP 4: Install Jenkins
+    # STEP 4: Install Jenkins (FIXED)
     # ==========================================
     echo "🔧 Step 4: Installing Jenkins..."
-    
-    # Try to add Jenkins repository with multiple attempts
-    JENKINS_REPO_SUCCESS=false
-    
-    # Method 1: Official Jenkins repo
-    if wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo 2>/dev/null; then
-      if rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key 2>/dev/null; then
-        JENKINS_REPO_SUCCESS=true
-        echo "✅ Jenkins repo added successfully"
-      fi
+
+    set -o pipefail
+
+    # Add Jenkins repo
+    cat >/etc/yum.repos.d/jenkins.repo <<'EOR'
+[jenkins]
+name=Jenkins-stable
+baseurl=https://pkg.jenkins.io/redhat-stable
+gpgcheck=1
+gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+EOR
+
+    # Import Jenkins GPG key
+    rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+
+    # Install dependencies
+    yum install -y fontconfig java-17-amazon-corretto-headless
+
+    # Install Jenkins with logging
+    yum install -y jenkins 2>&1 | tee /var/log/jenkins-install.log
+    install_status=$${PIPESTATUS[0]}
+
+    if [ "$install_status" -ne 0 ]; then
+      echo "❌ Jenkins installation failed, see /var/log/jenkins-install.log"
+      exit 1
     fi
-    
-    # Method 2: If official repo fails, try direct installation
-    if [ "$JENKINS_REPO_SUCCESS" = false ]; then
-      echo "⚠️  Official Jenkins repo failed, trying alternative installation..."
-      yum install -y wget java-17-amazon-corretto-headless || true
-    fi
-    
-    # Install Jenkins (don't exit on failure, log it instead)
-    if yum install -y jenkins 2>&1 | tee -a /var/log/jenkins-install.log; then
-      echo "✅ Jenkins package installed successfully"
-    else
-      echo "⚠️  Jenkins package installation reported issues, continuing..."
-    fi
-    
-    echo "✅ Jenkins installation step completed"
-    
-    # Start Jenkins service (don't fail if it doesn't exist)
-    if systemctl list-unit-files jenkins.service 2>/dev/null | grep -q jenkins; then
-      echo "Starting Jenkins service..."
-      systemctl enable jenkins
-      systemctl start jenkins
-      
-      # Wait for Jenkins to initialize
-      echo "⏳ Waiting for Jenkins to start..."
-      sleep 10
-      
-      # Check if Jenkins is running
+
+    echo "✅ Jenkins package installed"
+
+    # Enable and start Jenkins
+    systemctl daemon-reload
+    systemctl enable jenkins
+    systemctl start jenkins
+
+    echo "⏳ Waiting for Jenkins to start..."
+    for i in {1..60}; do
       if systemctl is-active --quiet jenkins; then
         echo "✅ Jenkins service is running"
-        
-        # Wait for Jenkins to be accessible
-        echo "⏳ Waiting for Jenkins web interface..."
-        for i in {1..60}; do
-          if curl -s http://localhost:8080 >/dev/null 2>&1; then
-            echo "✅ Jenkins web interface is accessible"
-            break
-          fi
-          echo "Attempt $i/60: Waiting for Jenkins web interface..."
-          sleep 2
-        done
-      else
-        echo "⚠️  Jenkins service not running. Check: sudo systemctl status jenkins"
-        systemctl status jenkins 2>&1 | head -20
+        break
       fi
-    else
-      echo "⚠️  Jenkins service file not found. Manual installation may be required."
-      echo "To install Jenkins manually, run: jenkins-fix.sh on the instance"
+      echo "Waiting for Jenkins... ($i/60)"
+      sleep 2
+    done
+
+    if ! systemctl is-active --quiet jenkins; then
+      echo "❌ Jenkins failed to start. Check: systemctl status jenkins"
     fi
-    
-    echo "✅ Jenkins installed successfully"
-    
+
+    # Check web endpoint
+    if curl -s http://localhost:8080 >/dev/null 2>&1; then
+      echo "✅ Jenkins web interface is accessible on port 8080"
+    else
+      echo "⚠️ Jenkins HTTP endpoint not responding yet"
+    fi
+
     # ==========================================
     # STEP 5: Clone Docker Image Repository
     # ==========================================
@@ -409,8 +399,7 @@ resource "aws_instance" "app" {
     DOCKER_REPO="/opt/docker-services"
     mkdir -p $DOCKER_REPO
     cd $DOCKER_REPO
-    
-    # Clone with detailed error logging
+
     echo "Cloning from: https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git"
     if git clone https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git . 2>&1 | tee -a /var/log/git-clone.log; then
       echo "✅ Repository cloned successfully"
@@ -427,7 +416,7 @@ resource "aws_instance" "app" {
         cat /var/log/git-clone.log || echo "No log available"
       fi
     fi
-    
+
     # ==========================================
     # STEP 6: Verify All Installations
     # ==========================================
@@ -436,14 +425,13 @@ resource "aws_instance" "app" {
     echo "✅ Docker Compose: $(docker-compose --version)"
     echo "✅ Git: $(git --version)"
     echo "✅ Java: $(java -version 2>&1 | head -n 1)"
-    
-    # Test Jenkins accessibility
+
     if curl -s http://localhost:8080 > /dev/null 2>&1; then
       echo "✅ Jenkins HTTP Status: OK (200)"
     else
       echo "⚠️ Jenkins may still be starting"
     fi
-    
+
     # ==========================================
     # STEP 7: Print Final Summary
     # ==========================================
@@ -453,9 +441,11 @@ resource "aws_instance" "app" {
     echo "=========================================="
     echo ""
     echo "🎯 Access Information:"
-    echo "- Jenkins URL: http://localhost:8080"
-    echo "- Jenkins URL (External): http://44.215.75.53:8080"
-    echo "- Default Credentials: admin / admin"
+    echo "- Jenkins URL (Local): http://localhost:8080"
+    echo "- Jenkins URL (External): http://<YOUR-EIP>:8080"
+    echo ""
+    echo "🔐 To unlock Jenkins for the first time, run on the instance:"
+    echo "  sudo cat /var/lib/jenkins/secrets/initialAdminPassword"
     echo ""
     echo "📁 Important Paths:"
     echo "- Docker Repo: /opt/docker-services"
@@ -463,10 +453,10 @@ resource "aws_instance" "app" {
     echo "- Setup Logs: /var/log/full-setup.log"
     echo ""
     echo "🚀 Next Steps:"
-    echo "1. Access Jenkins at http://44.215.75.53:8080"
-    echo "2. Create a new Pipeline job"
-    echo "3. Configure Pipeline to use: /opt/docker-services/Jenkinsfile"
-    echo "4. Build the pipeline to create Docker images"
+    echo "1. Access Jenkins at http://<YOUR-EIP>:8080"
+    echo "2. Complete initial setup using the admin password above"
+    echo "3. Create a new Pipeline job"
+    echo "4. Use /opt/docker-services/Jenkinsfile as the pipeline script"
     echo ""
     echo "=========================================="
     echo "Setup completed at $(date)"
@@ -532,7 +522,7 @@ resource "aws_s3_bucket_public_access_block" "app_storage" {
 # SERVICE 5: IAM User
 resource "aws_iam_user" "app_user" {
   count = local.should_create_iam_user ? 1 : 0
-  name = "${local.resource_name}-app-user"
+  name  = "${local.resource_name}-app-user"
 
   tags = {
     Name = "${local.resource_name}-app-user"
@@ -541,13 +531,13 @@ resource "aws_iam_user" "app_user" {
 
 resource "aws_iam_access_key" "app_user" {
   count = local.should_create_iam_user ? 1 : 0
-  user = aws_iam_user.app_user[0].name
+  user  = aws_iam_user.app_user[0].name
 }
 
 resource "aws_iam_user_policy" "s3_access" {
-  count  = local.should_create_iam_user ? 1 : 0
-  name   = "${var.project_name}-s3-access"
-  user   = aws_iam_user.app_user[0].name
+  count = local.should_create_iam_user ? 1 : 0
+  name  = "${var.project_name}-s3-access"
+  user  = aws_iam_user.app_user[0].name
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -568,9 +558,9 @@ resource "aws_iam_user_policy" "s3_access" {
 }
 
 resource "aws_iam_user_policy" "ec2_access" {
-  count  = local.should_create_iam_user ? 1 : 0
-  name   = "${var.project_name}-ec2-access"
-  user   = aws_iam_user.app_user[0].name
+  count = local.should_create_iam_user ? 1 : 0
+  name  = "${var.project_name}-ec2-access"
+  user  = aws_iam_user.app_user[0].name
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
