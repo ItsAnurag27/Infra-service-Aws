@@ -286,6 +286,13 @@ resource "aws_instance" "app" {
   vpc_security_group_ids      = local.should_create_sg ? [aws_security_group.ec2[0].id] : [data.aws_security_groups.existing_sg.ids[0]]
   associate_public_ip_address = true
 
+  root_block_device {
+    volume_type           = "gp2"
+    volume_size           = var.ebs_volume_size
+    delete_on_termination = true
+    encrypted             = false
+  }
+
   user_data = base64encode(<<-EOF
     #!/bin/bash
     set -e

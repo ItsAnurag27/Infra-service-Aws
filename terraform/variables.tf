@@ -31,7 +31,13 @@ variable "ec2_instance_count" {
 variable "ec2_instance_type" {
   description = "EC2 instance type"
   type        = string
-  default     = "t3.micro"
+  default     = "t2.large"
+}
+
+variable "ebs_volume_size" {
+  description = "EBS root volume size in GB"
+  type        = number
+  default     = 10
 }
 
 variable "iam_username" {
