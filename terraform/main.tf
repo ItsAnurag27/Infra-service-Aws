@@ -377,31 +377,12 @@ resource "aws_instance" "app" {
   depends_on = [aws_internet_gateway.main]
 }
 
-# Create Elastic IP for EC2 (if not already allocated)
-resource "aws_eip" "app" {
-  count    = var.ec2_instance_count > 0 && var.elastic_ip_allocation_id == "" ? 1 : 0
-  instance = aws_instance.app[0].id
-  domain   = "vpc"
-
-  tags = {
-    Name = "${var.project_name}-eip"
-  }
-
-  depends_on = [aws_internet_gateway.main, aws_instance.app]
-}
-
-# Associate existing Elastic IP with EC2 instance
+# Associate Existing Elastic IP (44.215.75.53) with EC2 instance
 resource "aws_eip_association" "app" {
-  count         = var.ec2_instance_count > 0 && var.elastic_ip_allocation_id != "" ? 1 : 0
   instance_id   = aws_instance.app[0].id
   allocation_id = var.elastic_ip_allocation_id
 
-  depends_on = [aws_instance.app]
-
-  # Retry logic for transient failures
-  provisioner "local-exec" {
-    command = "sleep 5"
-  }
+  depends_on = [aws_instance.app, aws_internet_gateway.main]
 }
 
 # SERVICE 4: S3 Bucket for Storage

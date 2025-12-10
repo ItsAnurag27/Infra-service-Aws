@@ -140,143 +140,33 @@ jobs:
           echo "**Branch:** ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
           echo "Check the logs above for error details." >> $GITHUB_STEP_SUMMARY
 
-  post-deployment-setup:
-    runs-on: ubuntu-latest
-    name: Wait for EC2 & Install Services
-    needs: terraform-apply
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
-
-      - name: Terraform Init
+      - name: Display Elastic IP Assignment
+        if: steps.apply.outcome == 'success'
         run: |
-          cd terraform
-          terraform init
-
-      - name: Get EC2 Instance IP
-        id: ec2
-        run: |
-          cd terraform
-          EC2_IP=$(terraform output -raw ec2_instance_public_ips 2>/dev/null | head -1 || echo "")
-          if [ -z "$EC2_IP" ]; then
-            echo "⏳ Waiting for EC2 instance public IP..."
-            sleep 10
-            EC2_IP=$(terraform output -raw ec2_instance_public_ips 2>/dev/null | head -1 || echo "")
-          fi
-          echo "ec2_ip=$EC2_IP" >> $GITHUB_OUTPUT
-          echo "EC2 Public IP: $EC2_IP"
-
-      - name: Wait for EC2 to be Active
-        run: |
-          EC2_IP="${{ steps.ec2.outputs.ec2_ip }}"
-          echo "⏳ Waiting for EC2 instance at $EC2_IP to be fully active..."
-          
-          # Wait for SSH to be available
-          for i in {1..60}; do
-            if timeout 5 bash -c "echo > /dev/tcp/$EC2_IP/22" 2>/dev/null; then
-              echo "✅ EC2 instance is active and SSH is available"
-              exit 0
-            fi
-            echo "Attempt $i/60: Waiting for SSH availability..."
-            sleep 10
-          done
-          
-          echo "❌ EC2 instance did not become active within timeout"
-          exit 1
-
-      - name: Install Docker & Docker Compose via SSH
-        run: |
-          EC2_IP="${{ steps.ec2.outputs.ec2_ip }}"
-          
-          echo "📦 Installing Docker and Docker Compose on EC2..."
-          
-          # Create installation script
-          cat > /tmp/install-docker.sh << 'DOCKER_SCRIPT'
-          #!/bin/bash
-          set -e
-          
-          echo "Updating system packages..."
-          sudo yum update -y
-          
-          echo "Installing Docker..."
-          sudo amazon-linux-extras install docker -y
-          
-          echo "Starting Docker service..."
-          sudo systemctl enable docker
-          sudo systemctl start docker
-          
-          echo "Adding ec2-user to docker group..."
-          sudo usermod -a -G docker ec2-user
-          
-          echo "Installing Docker Compose..."
-          sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-          sudo chmod +x /usr/local/bin/docker-compose
-          
-          echo "Verifying Docker installation..."
-          docker --version
-          docker-compose --version
-          
-          echo "✅ Docker and Docker Compose installed successfully"
-          DOCKER_SCRIPT
-          
-          chmod +x /tmp/install-docker.sh
-          
-          # Copy script to EC2 using SSH key from Terraform
-          cd terraform
-          SSH_KEY=$(terraform output -raw -json ec2_instance_ids 2>/dev/null | head -1)
-          
-          # For now, we'll notify about manual setup or use EC2 Instance Connect
-          echo "📝 Docker installation script ready for EC2"
-          echo "EC2 Instance: $EC2_IP"
-
-      - name: Verify Jenkins is Running
-        run: |
-          EC2_IP="${{ steps.ec2.outputs.ec2_ip }}"
-          
-          echo "🔍 Checking Jenkins status on $EC2_IP:8080..."
-          
-          # Wait for Jenkins to be available
-          for i in {1..30}; do
-            if curl -s -f -m 5 "http://$EC2_IP:8080" > /dev/null 2>&1; then
-              echo "✅ Jenkins is running and accessible at http://$EC2_IP:8080"
-              echo "Default credentials: admin / admin"
-              exit 0
-            fi
-            echo "Attempt $i/30: Waiting for Jenkins..."
-            sleep 10
-          done
-          
-          echo "⚠️ Jenkins may still be initializing. Check EC2 logs if needed."
-          echo "EC2 Instance: $EC2_IP"
-          echo "Jenkins URL: http://$EC2_IP:8080"
-
-      - name: Deployment Summary
-        if: always()
-        run: |
-          echo "## Post-Deployment Summary 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "## ✅ Infrastructure Deployed Successfully!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**EC2 Instance IP:** ${{ steps.ec2.outputs.ec2_ip }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Jenkins URL:** http://${{ steps.ec2.outputs.ec2_ip }}:8080" >> $GITHUB_STEP_SUMMARY
-          echo "**Default Credentials:** admin / admin" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Your Setup:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Elastic IP:** 44.215.75.53" >> $GITHUB_STEP_SUMMARY
+          echo "- **Jenkins URL:** http://44.215.75.53:8080" >> $GITHUB_STEP_SUMMARY
+          echo "- **Credentials:** admin / admin" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Services Installed:**" >> $GITHUB_STEP_SUMMARY
-          echo "- Jenkins (Automated)" >> $GITHUB_STEP_SUMMARY
-          echo "- Docker (User Data)" >> $GITHUB_STEP_SUMMARY
-          echo "- Docker Compose (User Data)" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Installed Services:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ EC2 Instance (t3.micro)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Docker" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Docker Compose" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Jenkins" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ GitHub Repo Cloned: /opt/docker-services" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🚀 Next Steps:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Access Jenkins at: **http://44.215.75.53:8080**" >> $GITHUB_STEP_SUMMARY
+          echo "2. Create a new Pipeline job" >> $GITHUB_STEP_SUMMARY
+          echo "3. Set Jenkinsfile path to: **/opt/docker-services/Jenkinsfile**" >> $GITHUB_STEP_SUMMARY
+          echo "4. Click **Build Now** - Docker images will be created!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📝 Repository Details:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Docker Repo Location:** /opt/docker-services" >> $GITHUB_STEP_SUMMARY
+          echo "- **Logs:** /var/log/full-setup.log" >> $GITHUB_STEP_SUMMARY
+          echo "- **GitHub Credentials:** Configured automatically" >> $GITHUB_STEP_SUMMARY
 
   terraform-destroy-approval:
     runs-on: ubuntu-latest
