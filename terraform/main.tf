@@ -317,13 +317,21 @@ resource "aws_instance" "app" {
     chmod +x /usr/local/bin/docker-compose
     echo "✅ Docker Compose installed"
     
-    # Install Jenkins
-    wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
-    rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key
+    # Install Jenkins with correct repo and GPG key
+    tee /etc/yum.repos.d/jenkins.repo > /dev/null << 'JENKINS_EOF'
+[jenkins]
+name=Jenkins-stable
+baseurl=https://pkg.jenkins.io/redhat-stable
+gpgcheck=1
+gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+JENKINS_EOF
+
+    rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+    yum install -y fontconfig java-17-amazon-corretto-headless
     yum install -y jenkins
     systemctl enable jenkins
     systemctl start jenkins
-    sleep 10
+    sleep 15
     echo "✅ Jenkins installed and started"
     
     # Clone Docker Services Repository
