@@ -45,6 +45,21 @@ data "aws_security_groups" "existing_sg" {
   }
 }
 
+# Get existing subnets from the VPC (if VPC exists)
+data "aws_subnets" "existing_public" {
+  count = length(data.aws_vpcs.existing_vpc.ids) > 0 ? 1 : 0
+  
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpcs.existing_vpc.ids[0]]
+  }
+  
+  filter {
+    name   = "tag:Name"
+    values = ["${var.project_name}-*-public-subnet"]
+  }
+}
+
 # Note: S3 bucket existence will be checked via try() during creation
 # No data source needed here - S3 creation will fail gracefully if bucket exists
 
@@ -267,8 +282,8 @@ resource "aws_instance" "app" {
   count                       = local.should_create_ec2 ? var.ec2_instance_count : 0
   ami                         = data.aws_ami.amazon_linux.id
   instance_type               = var.ec2_instance_type
-  subnet_id                   = aws_subnet.public[count.index % 2].id
-  vpc_security_group_ids      = [aws_security_group.ec2[0].id]
+  subnet_id                   = local.should_create_vpc ? aws_subnet.public[count.index % 2].id : data.aws_subnets.existing_public[0].ids[count.index % length(data.aws_subnets.existing_public[0].ids)]
+  vpc_security_group_ids      = local.should_create_sg ? [aws_security_group.ec2[0].id] : [data.aws_security_groups.existing_sg.ids[0]]
   associate_public_ip_address = true
 
   user_data = base64encode(<<-EOF
