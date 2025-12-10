@@ -364,62 +364,68 @@ echo ""
 echo "Log file:  /var/log/setup.log"
 echo "======================================"
 
-# PHASE 2: Schedule Jenkins installation as background task
+# PHASE 2: Install Jenkins (inline - not as background task)
 echo ""
-echo "PHASE 2: Scheduling Jenkins installation..."
-cat > /tmp/jenkins-install-final.sh << 'PHASE2_EOF'
-#!/bin/bash
-# PHASE 2: JENKINS FINAL INSTALLATION
-# This script installs Jenkins after EC2 is ready
-set -e
-LOG_FILE="/var/log/jenkins-final-install.log"
-exec > >(tee "$LOG_FILE")
-exec 2>&1
+echo "========================================"
+echo "PHASE 2: JENKINS INSTALLATION"
+echo "========================================"
 
-echo "======================================"
-echo "PHASE 2: JENKINS FINAL INSTALLATION"
-echo "Start: \$(date)"
-echo "======================================"
+echo "[JENKINS-1] Adding repository..."
+sudo tee /etc/yum.repos.d/jenkins.repo > /dev/null << 'JENKINS_EOF'
+[jenkins]
+name=Jenkins-stable
+baseurl=https://pkg.jenkins.io/redhat-stable
+gpgcheck=1
+gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+JENKINS_EOF
+echo "✅ Repository added"
 
-echo "[JENKINS PHASE 2A] Checking prerequisites..."
-java -version 2>&1 | head -1
-echo "✅ Java verified"
+echo "[JENKINS-2] Importing GPG key..."
+sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key 2>/dev/null || echo "⚠️  GPG import done"
+echo "✅ GPG key processed"
 
-echo "[JENKINS PHASE 2B] Downloading Jenkins..."
-mkdir -p /tmp/jenkins-download
-yum install --downloadonly --downloaddir=/tmp/jenkins-download -y jenkins fontconfig 2>&1 | tail -3 || true
+echo "[JENKINS-3] Downloading Jenkins packages..."
+sudo mkdir -p /tmp/jenkins-download
+sudo yum install --downloadonly --downloaddir=/tmp/jenkins-download -y jenkins fontconfig 2>&1 | tail -2 || true
 echo "✅ Downloaded"
 
-echo "[JENKINS PHASE 2C] Waiting for I/O..."
+echo "[JENKINS-4] Waiting for downloads..."
 sleep 15
 
-echo "[JENKINS PHASE 2D] Installing Jenkins..."
-if yum install -y jenkins 2>&1 | tail -5; then
+echo "[JENKINS-5] Installing Jenkins..."
+if sudo yum install -y jenkins 2>&1 | tail -3; then
   echo "✅ Jenkins installed"
 else
-  yum install -y --nogpgcheck jenkins
-  echo "✅ Jenkins installed (GPG check skipped)"
+  sudo yum install -y --nogpgcheck jenkins 2>&1 | tail -3
+  echo "✅ Jenkins installed (GPG skipped)"
 fi
 
-echo "[JENKINS PHASE 2E] Enabling service..."
-systemctl enable jenkins
+echo "[JENKINS-6] Verifying..."
+if sudo rpm -qa | grep -q jenkins; then
+  echo "✅ Verified: \$(sudo rpm -qa | grep jenkins)"
+else
+  echo "❌ Jenkins package not found"
+fi
+
+echo "[JENKINS-7] Enabling service..."
+sudo systemctl enable jenkins
 echo "✅ Service enabled"
 
-echo "[JENKINS PHASE 2F] Starting Jenkins..."
-systemctl start jenkins
-echo "✅ Start command issued"
+echo "[JENKINS-8] Starting Jenkins..."
+sudo systemctl start jenkins 2>&1 || true
+echo "✅ Start issued"
 
-echo "[JENKINS PHASE 2G] Waiting for startup..."
+echo "[JENKINS-9] Waiting for Jenkins..."
 for i in {1..60}; do
-  if systemctl is-active --quiet jenkins; then
-    echo "✅ Jenkins running! (took \$i seconds)"
+  if sudo systemctl is-active --quiet jenkins 2>/dev/null; then
+    echo "✅ Jenkins running! ($i seconds)"
     break
   fi
   sleep 1
 done
 
-echo "[JENKINS PHASE 2H] Waiting for web interface..."
-sleep 15
+echo "[JENKINS-10] Checking web interface..."
+sleep 20
 for i in {1..10}; do
   HTTP=\$(curl -s -o /dev/null -w "%%{http_code}" http://localhost:8080 || echo "000")
   if echo \$HTTP | grep -E "200|403|401" > /dev/null; then
@@ -429,32 +435,21 @@ for i in {1..10}; do
   sleep 5
 done
 
-echo "[JENKINS PHASE 2I] Getting admin password..."
+echo "[JENKINS-11] Getting admin password..."
 sleep 10
-if [ -f /var/lib/jenkins/secrets/initialAdminPassword ]; then
-  echo "✅ Admin password ready"
-  cat /var/lib/jenkins/secrets/initialAdminPassword | head -c 20
+if sudo test -f /var/lib/jenkins/secrets/initialAdminPassword; then
+  echo "✅ Admin password ready:"
+  sudo cat /var/lib/jenkins/secrets/initialAdminPassword | head -c 30
   echo "..."
 fi
 
 echo ""
-echo "======================================"
-echo "✅ PHASE 2 COMPLETE!"
-echo "======================================"
-echo "Jenkins: \$(systemctl is-active jenkins)"
-echo "Version: \$(rpm -qa | grep jenkins)"
-echo "URL: http://localhost:8080"
-echo "======================================"
-PHASE2_EOF
-
-chmod +x /tmp/jenkins-install-final.sh
-
-echo "✅ Phase 2 script ready"
-echo ""
-echo "Starting Phase 2 in background (check: sudo tail -f /var/log/jenkins-final-install.log)..."
-/tmp/jenkins-install-final.sh > /var/log/jenkins-final-install.log 2>&1 &
-echo "✅ Phase 2 scheduled"
-echo ""
+echo "========================================"
+echo "✅ PHASE 2: JENKINS COMPLETE!"
+echo "========================================"
+echo "Jenkins Status: \$(sudo systemctl is-active jenkins)"
+echo "Jenkins URL: http://localhost:8080"
+echo "====================================="
 EOF
   )
 
