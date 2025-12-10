@@ -294,45 +294,41 @@ resource "aws_instance" "app" {
   user_data = base64encode(<<EOF
 #!/bin/bash
 set -e
-
-# Log everything to /var/log/setup.log
 exec > >(tee /var/log/setup.log)
 exec 2>&1
 
 echo "======================================"
-echo "Starting EC2 Setup at \$(date)"
+echo "PHASE 1: EC2 BOOTSTRAP (user_data)"
+echo "Start: \$(date)"
 echo "======================================"
 
-# ---- STEP 1: Update system & base packages ----
+# PHASE 1A: System updates
+echo ""
+echo "PHASE 1A: System updates..."
 yum update -y
 yum install -y git curl wget java-17-amazon-corretto-headless
 
-# ---- STEP 2: Install Docker ----
-echo "Installing Docker..."
-# Try yum first, fall back to amazon-linux-extras
-if ! yum install -y docker; then
-  echo "yum docker install failed, trying amazon-linux-extras..."
-  amazon-linux-extras install docker -y
+# PHASE 1B: Docker installation
+echo ""
+echo "PHASE 1B: Docker installation..."
+if ! yum install -y docker 2>/dev/null; then
+  amazon-linux-extras install -y docker
 fi
-
 systemctl enable docker
 systemctl start docker
 usermod -a -G docker ec2-user
-echo "✅ Docker installed: \$(docker --version)"
+echo "✅ Docker: \$(docker --version)"
 
-# ---- STEP 3: Install Docker Compose ----
-echo "Installing Docker Compose..."
-curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)" -o /usr/local/bin/docker-compose
-chmod +x /usr/local/bin/docker-compose
-echo "✅ Docker Compose installed: \$(docker-compose --version)"
-
-# ---- STEP 4: Install Jenkins with detailed logging ----
+# PHASE 1C: Docker Compose installation
 echo ""
-echo "========================================"
-echo "STEP 4: JENKINS INSTALLATION"
-echo "========================================"
+echo "PHASE 1C: Docker Compose installation..."
+curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)" -o /usr/local/bin/docker-compose 2>/dev/null
+chmod +x /usr/local/bin/docker-compose
+echo "✅ Docker Compose: \$(docker-compose --version)"
 
-echo "[STAGE 1] Creating Jenkins repository..."
+# PHASE 1D: Prepare for Jenkins (repo + GPG key)
+echo ""
+echo "PHASE 1D: Preparing Jenkins repository..."
 cat >/etc/yum.repos.d/jenkins.repo <<'JENKINS_EOF'
 [jenkins]
 name=Jenkins-stable
@@ -340,116 +336,125 @@ baseurl=https://pkg.jenkins.io/redhat-stable
 gpgcheck=1
 gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
 JENKINS_EOF
-echo "✅ [STAGE 1] Repository config created"
+rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key 2>/dev/null || true
+echo "✅ Jenkins repository ready"
 
-echo "[STAGE 2] Importing Jenkins GPG key..."
-rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key 2>/dev/null || echo "⚠️  GPG import skipped"
-echo "✅ [STAGE 2] Completed"
+# PHASE 1E: Clone repository
+echo ""
+echo "PHASE 1E: Cloning Docker services repository..."
+mkdir -p /opt/docker-services
+cd /opt/docker-services
+git clone https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git . 2>/dev/null || echo "⚠️  Git clone warning"
+echo "✅ Repository cloned"
 
-echo "[STAGE 3] Installing fontconfig and Java 17..."
-yum install -y fontconfig java-17-amazon-corretto-headless > /dev/null 2>&1
-echo "✅ [STAGE 3] Java installed: \$(java -version 2>&1 | head -1)"
+# PHASE 1 Complete
+echo ""
+echo "======================================"
+echo "✅ PHASE 1 COMPLETE!"
+echo "======================================"
+echo "Docker: \$(docker --version)"
+echo "Docker Compose: \$(docker-compose --version)"
+echo "Java: \$(java -version 2>&1 | head -1)"
+echo ""
+echo "📋 NEXT STEP (PHASE 2):"
+echo "   A separate Jenkins installation will run automatically."
+echo "   Monitor: sudo tail -f /var/log/jenkins-final-install.log"
+echo "======================================"
+echo ""
+echo "Log file:  /var/log/setup.log"
+echo "======================================"
 
-echo "[STAGE 4] Downloading Jenkins package (this may take a few minutes)..."
-yum install -y jenkins --downloadonly --downloaddir=/tmp/jenkins-pkg 2>&1 | grep -E "Downloaded|Downloading" || echo "✓ Jenkins packages ready"
-echo "✅ [STAGE 4] Jenkins packages downloaded"
+# PHASE 2: Schedule Jenkins installation as background task
+echo ""
+echo "PHASE 2: Scheduling Jenkins installation..."
+cat > /tmp/jenkins-install-final.sh << 'PHASE2_EOF'
+#!/bin/bash
+# PHASE 2: JENKINS FINAL INSTALLATION
+# This script installs Jenkins after EC2 is ready
+set -e
+LOG_FILE="/var/log/jenkins-final-install.log"
+exec > >(tee "$LOG_FILE")
+exec 2>&1
 
-echo "[STAGE 5] Waiting for all downloads to complete..."
-sleep 10
-echo "✅ [STAGE 5] Download wait complete"
+echo "======================================"
+echo "PHASE 2: JENKINS FINAL INSTALLATION"
+echo "Start: \$(date)"
+echo "======================================"
 
-echo "[STAGE 6] Installing Jenkins package..."
+echo "[JENKINS PHASE 2A] Checking prerequisites..."
+java -version 2>&1 | head -1
+echo "✅ Java verified"
+
+echo "[JENKINS PHASE 2B] Downloading Jenkins..."
+mkdir -p /tmp/jenkins-download
+yum install --downloadonly --downloaddir=/tmp/jenkins-download -y jenkins fontconfig 2>&1 | tail -3 || true
+echo "✅ Downloaded"
+
+echo "[JENKINS PHASE 2C] Waiting for I/O..."
+sleep 15
+
+echo "[JENKINS PHASE 2D] Installing Jenkins..."
 if yum install -y jenkins 2>&1 | tail -5; then
-  echo "✅ [STAGE 6] Jenkins package installed successfully"
+  echo "✅ Jenkins installed"
 else
-  echo "⚠️  Installing Jenkins with --nogpgcheck..."
   yum install -y --nogpgcheck jenkins
-  echo "✅ [STAGE 6] Jenkins installed (GPG check skipped)"
+  echo "✅ Jenkins installed (GPG check skipped)"
 fi
 
-echo "[STAGE 7] Verifying Jenkins installation..."
-JENKINS_PKG=\$(rpm -qa | grep jenkins)
-if [ -n "\$JENKINS_PKG" ]; then
-  echo "✅ [STAGE 7] Jenkins verified: \$JENKINS_PKG"
-else
-  echo "❌ [STAGE 7] Jenkins package not found after installation"
-  exit 1
-fi
-
-echo "[STAGE 8] Enabling Jenkins service at boot..."
+echo "[JENKINS PHASE 2E] Enabling service..."
 systemctl enable jenkins
-echo "✅ [STAGE 8] Jenkins service enabled"
+echo "✅ Service enabled"
 
-echo "[STAGE 9] Starting Jenkins service..."
-systemctl start jenkins 2>&1
-echo "✅ [STAGE 9] Jenkins service start command issued"
+echo "[JENKINS PHASE 2F] Starting Jenkins..."
+systemctl start jenkins
+echo "✅ Start command issued"
 
-echo "[STAGE 10] Waiting for Jenkins to initialize (takes 20-30 seconds)..."
-for i in {1..30}; do
+echo "[JENKINS PHASE 2G] Waiting for startup..."
+for i in {1..60}; do
   if systemctl is-active --quiet jenkins; then
-    echo "✅ [STAGE 10] Jenkins is running! (took \$i seconds)"
+    echo "✅ Jenkins running! (took \$i seconds)"
     break
-  fi
-  if [ \$i -eq 30 ]; then
-    echo "⚠️  [STAGE 10] Jenkins initialization taking longer than expected"
   fi
   sleep 1
 done
 
-echo "[STAGE 11] Final Jenkins status check..."
-JENKINS_STATUS=\$(systemctl is-active jenkins)
-echo "Jenkins Status: \$JENKINS_STATUS"
-if [ "\$JENKINS_STATUS" = "active" ]; then
-  echo "✅ [STAGE 11] Jenkins is fully running"
-else
-  echo "⚠️  [STAGE 11] Jenkins status: \$JENKINS_STATUS (may still be starting)"
-  journalctl -u jenkins -n 20 >> /var/log/setup.log 2>&1 || true
-fi
+echo "[JENKINS PHASE 2H] Waiting for web interface..."
+sleep 15
+for i in {1..10}; do
+  HTTP=\$(curl -s -o /dev/null -w "%%{http_code}" http://localhost:8080 || echo "000")
+  if echo \$HTTP | grep -E "200|403|401" > /dev/null; then
+    echo "✅ Web interface ready (HTTP \$HTTP)"
+    break
+  fi
+  sleep 5
+done
 
-echo "[STAGE 12] Jenkins web interface check..."
-sleep 5
-HTTP_CODE=\$(curl -s -o /dev/null -w "%%{http_code}" http://localhost:8080)
-if echo \$HTTP_CODE | grep -E "200|403" > /dev/null; then
-  echo "✅ [STAGE 12] Jenkins web interface responding (HTTP \$HTTP_CODE)!"
-else
-  echo "ℹ️  [STAGE 12] Jenkins web interface: HTTP \$HTTP_CODE (still initializing)"
+echo "[JENKINS PHASE 2I] Getting admin password..."
+sleep 10
+if [ -f /var/lib/jenkins/secrets/initialAdminPassword ]; then
+  echo "✅ Admin password ready"
+  cat /var/lib/jenkins/secrets/initialAdminPassword | head -c 20
+  echo "..."
 fi
 
 echo ""
-echo "========================================"
-echo "✅ JENKINS INSTALLATION COMPLETE"
-echo "========================================"
-echo "Jenkins URL: http://localhost:8080"
-echo "Jenkins Status: \$(systemctl is-active jenkins)"
-echo "Jenkins Version: \$(rpm -qa | grep jenkins || echo 'checking...')"
-echo "Initial setup logs: sudo journalctl -u jenkins -f"
-echo "========================================"
-echo ""
+echo "======================================"
+echo "✅ PHASE 2 COMPLETE!"
+echo "======================================"
+echo "Jenkins: \$(systemctl is-active jenkins)"
+echo "Version: \$(rpm -qa | grep jenkins)"
+echo "URL: http://localhost:8080"
+echo "======================================"
+PHASE2_EOF
 
-# ---- STEP 5: Clone Docker Services Repository ----
-echo "Cloning Docker services repository..."
-mkdir -p /opt/docker-services
-cd /opt/docker-services
-if git clone https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git .; then
-  echo "✅ Repository cloned to /opt/docker-services"
-else
-  echo "⚠️ Git clone failed"
-fi
+chmod +x /tmp/jenkins-install-final.sh
 
-# ---- FINAL SUMMARY ----
+echo "✅ Phase 2 script ready"
 echo ""
-echo "======================================"
-echo "✅ SETUP COMPLETE!"
-echo "======================================"
-echo "Docker: \$(docker --version)"
-echo "Docker Compose: \$(docker-compose --version || echo 'not found')"
-echo "Jenkins: service status:"
-systemctl is-active jenkins || echo "jenkins not active"
-echo "Jenkins URL (local):  http://localhost:8080"
-echo "Jenkins URL (public): http://YOUR_EIP:8080"
-echo "Repo path: /opt/docker-services"
-echo "Log file:  /var/log/setup.log"
-echo "======================================"
+echo "Starting Phase 2 in background (check: sudo tail -f /var/log/jenkins-final-install.log)..."
+/tmp/jenkins-install-final.sh > /var/log/jenkins-final-install.log 2>&1 &
+echo "✅ Phase 2 scheduled"
+echo ""
 EOF
   )
 
