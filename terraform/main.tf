@@ -291,34 +291,44 @@ resource "aws_instance" "app" {
     encrypted             = false
   }
 
-  user_data = base64encode(<<-EOF
-    #!/bin/bash
-    set -e
-    exec > >(tee /var/log/setup.log)
-    exec 2>&1
-    
-    echo "======================================"
-    echo "Starting EC2 Setup"
-    echo "======================================"
-    
-    # Update system
-    yum update -y
-    yum install -y git curl wget java-17-amazon-corretto-headless
-    
-    # Install Docker
-    amazon-linux-extras install -y docker
-    systemctl enable docker
-    systemctl start docker
-    usermod -a -G docker ec2-user
-    echo "✅ Docker installed"
-    
-    # Install Docker Compose
-    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-    echo "✅ Docker Compose installed"
-    
-    # Install Jenkins with correct repo and GPG key
-    tee /etc/yum.repos.d/jenkins.repo > /dev/null << 'JENKINS_EOF'
+  user_data = base64encode(<<EOF
+#!/bin/bash
+set -e
+
+# Log everything to /var/log/setup.log
+exec > >(tee /var/log/setup.log)
+exec 2>&1
+
+echo "======================================"
+echo "Starting EC2 Setup at \$(date)"
+echo "======================================"
+
+# ---- STEP 1: Update system & base packages ----
+yum update -y
+yum install -y git curl wget java-17-amazon-corretto-headless
+
+# ---- STEP 2: Install Docker ----
+echo "Installing Docker..."
+# Try yum first, fall back to amazon-linux-extras
+if ! yum install -y docker; then
+  echo "yum docker install failed, trying amazon-linux-extras..."
+  amazon-linux-extras install docker -y
+fi
+
+systemctl enable docker
+systemctl start docker
+usermod -a -G docker ec2-user
+echo "✅ Docker installed: \$(docker --version)"
+
+# ---- STEP 3: Install Docker Compose ----
+echo "Installing Docker Compose..."
+curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)" -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
+echo "✅ Docker Compose installed: \$(docker-compose --version)"
+
+# ---- STEP 4: Install Jenkins with correct repo & key ----
+echo "Configuring Jenkins repo..."
+cat >/etc/yum.repos.d/jenkins.repo <<'JENKINS_EOF'
 [jenkins]
 name=Jenkins-stable
 baseurl=https://pkg.jenkins.io/redhat-stable
@@ -326,32 +336,54 @@ gpgcheck=1
 gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
 JENKINS_EOF
 
-    rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
-    yum install -y fontconfig java-17-amazon-corretto-headless
-    yum install -y jenkins
-    systemctl enable jenkins
-    systemctl start jenkins
-    sleep 15
-    echo "✅ Jenkins installed and started"
-    
-    # Clone Docker Services Repository
-    mkdir -p /opt/docker-services
-    cd /opt/docker-services
-    git clone https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git . || echo "⚠️ Git clone warning"
-    echo "✅ Repository cloned"
-    
-    # Print summary
-    echo ""
-    echo "======================================"
-    echo "✅ SETUP COMPLETE!"
-    echo "======================================"
-    echo "Docker: $(docker --version)"
-    echo "Docker Compose: $(docker-compose --version)"
-    echo "Jenkins: Running at http://localhost:8080"
-    echo "Repository: /opt/docker-services"
-    echo "======================================"
-  EOF
+echo "Importing Jenkins GPG key..."
+rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+
+echo "Installing Java & Jenkins..."
+yum install -y fontconfig java-17-amazon-corretto-headless
+yum install -y jenkins
+
+echo "Enabling and starting Jenkins..."
+systemctl enable jenkins
+systemctl start jenkins
+
+echo "Waiting for Jenkins to start..."
+sleep 20
+
+if systemctl is-active --quiet jenkins; then
+  echo "✅ Jenkins service is running"
+else
+  echo "❌ Jenkins failed to start"
+  systemctl status jenkins || true
+fi
+
+# ---- STEP 5: Clone Docker Services Repository ----
+echo "Cloning Docker services repository..."
+mkdir -p /opt/docker-services
+cd /opt/docker-services
+if git clone https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git .; then
+  echo "✅ Repository cloned to /opt/docker-services"
+else
+  echo "⚠️ Git clone failed"
+fi
+
+# ---- FINAL SUMMARY ----
+echo ""
+echo "======================================"
+echo "✅ SETUP COMPLETE!"
+echo "======================================"
+echo "Docker: \$(docker --version)"
+echo "Docker Compose: \$(docker-compose --version || echo 'not found')"
+echo "Jenkins: service status:"
+systemctl is-active jenkins || echo "jenkins not active"
+echo "Jenkins URL (local):  http://localhost:8080"
+echo "Jenkins URL (public): http://YOUR_EIP:8080"
+echo "Repo path: /opt/docker-services"
+echo "Log file:  /var/log/setup.log"
+echo "======================================"
+EOF
   )
+
 
   tags = {
     Name = "15-services-${count.index + 1}"
