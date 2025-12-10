@@ -379,6 +379,7 @@ resource "aws_instance" "app" {
 
 # Associate Existing Elastic IP (44.215.75.53) with EC2 instance
 resource "aws_eip_association" "app" {
+  count         = var.elastic_ip_allocation_id != "" ? 1 : 0
   instance_id   = aws_instance.app[0].id
   allocation_id = var.elastic_ip_allocation_id
 
