@@ -44,12 +44,12 @@ output "ec2_instance_private_ips" {
 
 output "iam_user_name" {
   description = "IAM user name"
-  value       = length(aws_iam_user.app_user) > 0 ? aws_iam_user.app_user[0].name : data.aws_iam_user.existing.user_name
+  value       = length(aws_iam_user.app_user) > 0 ? aws_iam_user.app_user[0].name : "Not available - check AWS console"
 }
 
 output "iam_user_arn" {
   description = "IAM user ARN"
-  value       = length(aws_iam_user.app_user) > 0 ? aws_iam_user.app_user[0].arn : data.aws_iam_user.existing.arn
+  value       = length(aws_iam_user.app_user) > 0 ? aws_iam_user.app_user[0].arn : "Not available - check AWS console"
 }
 
 output "iam_access_key_id" {

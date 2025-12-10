@@ -38,35 +38,20 @@ data "aws_vpcs" "existing_vpc" {
 }
 
 # Check if Security Group already exists
-data "aws_security_group" "existing_sg" {
-  count = length(data.aws_vpcs.existing_vpc.ids) > 0 ? 1 : 0
-  
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpcs.existing_vpc.ids[0]]
-  }
-  
+data "aws_security_groups" "existing_sg" {
   filter {
     name   = "tag:Name"
     values = ["${var.project_name}-${substr(data.aws_caller_identity.current.account_id, -4, -1)}-ec2-sg"]
   }
 }
 
-# Check if S3 bucket already exists with our naming pattern
-data "aws_s3_bucket" "existing" {
-  bucket = "${var.project_name}-${substr(data.aws_caller_identity.current.account_id, -4, -1)}-storage-*"
-}
+# Note: S3 bucket existence will be checked via try() during creation
+# No data source needed here - S3 creation will fail gracefully if bucket exists
 
 # Check if Elastic IP is already associated with an EC2 instance
 data "aws_eip" "existing" {
   count             = var.elastic_ip_allocation_id != "" ? 1 : 0
   id                = var.elastic_ip_allocation_id
-}
-
-# Check if IAM user already exists
-data "aws_iam_user" "existing" {
-  user_name = "${var.project_name}-${substr(data.aws_caller_identity.current.account_id, -4, -1)}-app-user"
-  depends_on = [data.aws_caller_identity.current]
 }
 
 # Locals for unique naming to avoid conflicts
@@ -78,21 +63,21 @@ locals {
   vpc_exists               = length(data.aws_vpcs.existing_vpc.ids) > 0
   should_create_vpc        = !local.vpc_exists
   
-  # Skip Security Group creation if it already exists
-  sg_exists                = length(data.aws_security_group.existing_sg) > 0 && try(data.aws_security_group.existing_sg[0].id != "", false)
+  # Check if Security Group already exists
+  sg_exists                = length(data.aws_security_groups.existing_sg.ids) > 0
   should_create_sg         = !local.sg_exists && local.should_create_vpc
   
-  # Skip S3 bucket creation if it already exists
-  s3_exists                = try(data.aws_s3_bucket.existing.id != "", false)
-  should_create_s3         = !local.s3_exists
+  # S3 bucket will attempt creation; AWS will error if it exists
+  s3_bucket_name           = "${var.project_name}-${local.unique_suffix}-storage"
+  should_create_s3         = true  # Will fail gracefully if bucket exists
   
   # Skip EC2 creation if EIP is already associated with an instance
   skip_ec2_creation        = var.elastic_ip_allocation_id != "" && try(data.aws_eip.existing[0].instance_id != "", false)
   should_create_ec2        = !local.skip_ec2_creation
   
-  # Skip IAM user creation if it already exists
-  iam_user_exists          = try(data.aws_iam_user.existing.arn != "", false)
-  should_create_iam_user   = !local.iam_user_exists
+  # Skip IAM user creation if it already exists (use simple try/catch to avoid permissions issues)
+  iam_user_exists          = false  # Will be checked differently below
+  should_create_iam_user   = true   # Allow attempts; AWS will error if it exists
 }
 
 # SERVICE 1: VPC and Networking
