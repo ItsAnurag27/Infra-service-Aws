@@ -363,6 +363,87 @@ echo "======================================"
 echo ""
 echo "Log file:  /var/log/setup.log"
 echo "======================================"
+
+# PHASE 2: Install Jenkins (inline in user_data)
+echo ""
+echo "========================================"
+echo "PHASE 2: JENKINS INSTALLATION"
+echo "========================================"
+
+echo "[JENKINS-1] Adding repository..."
+sudo tee /etc/yum.repos.d/jenkins.repo > /dev/null << 'JENKINS_EOF'
+[jenkins]
+name=Jenkins-stable
+baseurl=https://pkg.jenkins.io/redhat-stable
+gpgcheck=1
+gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+JENKINS_EOF
+echo "✅ Repository added"
+
+echo "[JENKINS-2] Importing GPG key..."
+sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key 2>/dev/null || echo "⚠️  GPG import done"
+echo "✅ GPG key processed"
+
+echo "[JENKINS-3] Downloading Jenkins packages..."
+sudo mkdir -p /tmp/jenkins-download
+sudo yum install --downloadonly --downloaddir=/tmp/jenkins-download -y jenkins fontconfig 2>&1 | tail -2 || true
+echo "✅ Downloaded"
+
+echo "[JENKINS-4] Waiting for I/O..."
+sleep 15
+
+echo "[JENKINS-5] Installing Jenkins..."
+if sudo yum install -y jenkins 2>&1 | tail -3; then
+  echo "✅ Jenkins installed"
+else
+  sudo yum install -y --nogpgcheck jenkins 2>&1 | tail -3
+  echo "✅ Jenkins installed (GPG skipped)"
+fi
+
+echo "[JENKINS-6] Verifying..."
+sudo rpm -qa | grep jenkins || echo "⚠️  Package check done"
+
+echo "[JENKINS-7] Enabling service..."
+sudo systemctl enable jenkins
+echo "✅ Service enabled"
+
+echo "[JENKINS-8] Starting Jenkins..."
+sudo systemctl start jenkins 2>&1 || true
+echo "✅ Start issued"
+
+echo "[JENKINS-9] Waiting for Jenkins to run..."
+for i in {1..60}; do
+  if sudo systemctl is-active --quiet jenkins 2>/dev/null; then
+    echo "✅ Jenkins running! ($i seconds)"
+    break
+  fi
+  sleep 1
+done
+
+echo "[JENKINS-10] Waiting for web interface..."
+sleep 20
+for i in {1..10}; do
+  HTTP=\$(curl -s -o /dev/null -w "%%{http_code}" http://localhost:8080 || echo "000")
+  if echo \$HTTP | grep -E "200|403|401" > /dev/null; then
+    echo "✅ Web interface ready (HTTP \$HTTP)"
+    break
+  fi
+  sleep 5
+done
+
+echo "[JENKINS-11] Getting admin password..."
+sleep 10
+if sudo test -f /var/lib/jenkins/secrets/initialAdminPassword; then
+  echo "✅ Initial Admin Password:"
+  sudo cat /var/lib/jenkins/secrets/initialAdminPassword | head -c 30
+  echo "..."
+fi
+
+echo ""
+echo "========================================"
+echo "✅ PHASE 2: JENKINS COMPLETE!"
+echo "========================================"
+echo "Status: \$(sudo systemctl is-active jenkins)"
 EOF
   )
 

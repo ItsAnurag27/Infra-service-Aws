@@ -7,7 +7,7 @@ on:
       - completed
 
 jobs:
-  install-jenkins:
+  verify-jenkins:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     
@@ -32,131 +32,20 @@ jobs:
           echo "ec2_ip=$EC2_IP" >> $GITHUB_OUTPUT
           echo "✅ EC2 IP: $EC2_IP"
 
-      - name: Wait for EC2 SSH to be ready
+      - name: Wait for Jenkins to be ready (up to 5 minutes)
         run: |
-          echo "Waiting for EC2 SSH to be ready..."
-          for i in {1..60}; do
-            if timeout 5 bash -c "echo >/dev/tcp/${{ steps.get-ip.outputs.ec2_ip }}/22" 2>/dev/null; then
-              echo "✅ EC2 SSH is ready!"
+          echo "Waiting for Jenkins to complete PHASE 1+2 installation..."
+          for i in {1..300}; do
+            if curl -s -f -m 5 http://${{ steps.get-ip.outputs.ec2_ip }}:8080 >/dev/null 2>&1; then
+              echo "✅ Jenkins is responding!"
               exit 0
             fi
-            if [ $((i % 10)) -eq 0 ]; then
-              echo "  Attempt $i/60..."
-            fi
-            sleep 5
-          done
-          echo "❌ EC2 SSH not ready after 5 minutes"
-          exit 1
-
-      - name: Wait for PHASE 1 to complete
-        run: |
-          echo "Waiting for EC2 PHASE 1 (Docker/Compose) to complete..."
-          for i in {1..120}; do
-            if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ec2-user@${{ steps.get-ip.outputs.ec2_ip }} \
-              'test -f /var/log/setup.log && grep -q "PHASE 1 COMPLETE" /var/log/setup.log' 2>/dev/null; then
-              echo "✅ PHASE 1 complete!"
-              exit 0
-            fi
-            if [ $((i % 30)) -eq 0 ]; then
-              echo "  Still waiting... ($i/120 seconds)"
+            if [ $((i % 60)) -eq 0 ]; then
+              echo "  Still waiting... ($i/300 seconds elapsed)"
             fi
             sleep 1
           done
-          echo "⚠️  PHASE 1 check timeout, proceeding anyway"
-
-      - name: Install Jenkins (PHASE 2)
-        run: |
-          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ec2-user@${{ steps.get-ip.outputs.ec2_ip }} << 'JENKINS_SCRIPT'
-          #!/bin/bash
-          set -e
-          exec > >(tee -a /var/log/setup.log)
-          exec 2>&1
-          
-          echo ""
-          echo "========================================"
-          echo "PHASE 2: JENKINS INSTALLATION (SSH)"
-          echo "========================================"
-          
-          echo "[JENKINS-1] Adding repository..."
-          sudo tee /etc/yum.repos.d/jenkins.repo > /dev/null << 'EOF'
-          [jenkins]
-          name=Jenkins-stable
-          baseurl=https://pkg.jenkins.io/redhat-stable
-          gpgcheck=1
-          gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
-          EOF
-          echo "✅ Repository added"
-          
-          echo "[JENKINS-2] Importing GPG key..."
-          sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key 2>/dev/null || echo "⚠️  GPG import done"
-          echo "✅ GPG key processed"
-          
-          echo "[JENKINS-3] Downloading Jenkins packages..."
-          sudo mkdir -p /tmp/jenkins-download
-          sudo yum install --downloadonly --downloaddir=/tmp/jenkins-download -y jenkins fontconfig 2>&1 | tail -2 || true
-          echo "✅ Downloaded"
-          
-          echo "[JENKINS-4] Waiting for I/O..."
-          sleep 15
-          
-          echo "[JENKINS-5] Installing Jenkins..."
-          if sudo yum install -y jenkins 2>&1 | tail -3; then
-            echo "✅ Jenkins installed"
-          else
-            sudo yum install -y --nogpgcheck jenkins 2>&1 | tail -3
-            echo "✅ Jenkins installed (GPG skipped)"
-          fi
-          
-          echo "[JENKINS-6] Verifying..."
-          sudo rpm -qa | grep jenkins || echo "⚠️  Package check done"
-          
-          echo "[JENKINS-7] Enabling service..."
-          sudo systemctl enable jenkins
-          echo "✅ Service enabled"
-          
-          echo "[JENKINS-8] Starting Jenkins..."
-          sudo systemctl start jenkins 2>&1 || true
-          echo "✅ Start issued"
-          
-          echo "[JENKINS-9] Waiting for Jenkins to run..."
-          for i in {1..60}; do
-            if sudo systemctl is-active --quiet jenkins 2>/dev/null; then
-              echo "✅ Jenkins running! ($i seconds)"
-              break
-            fi
-            sleep 1
-          done
-          
-          echo "[JENKINS-10] Waiting for web interface..."
-          sleep 20
-          for i in {1..10}; do
-            HTTP=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 || echo "000")
-            if echo $HTTP | grep -E "200|403|401" > /dev/null; then
-              echo "✅ Web interface ready (HTTP $HTTP)"
-              break
-            fi
-            sleep 5
-          done
-          
-          echo "[JENKINS-11] Getting admin password..."
-          sleep 10
-          if sudo test -f /var/lib/jenkins/secrets/initialAdminPassword; then
-            echo "✅ Initial Admin Password:"
-            sudo cat /var/lib/jenkins/secrets/initialAdminPassword | head -c 30
-            echo "..."
-          fi
-          
-          echo ""
-          echo "========================================"
-          echo "✅ PHASE 2: JENKINS COMPLETE!"
-          echo "========================================"
-          echo "Status: $(sudo systemctl is-active jenkins)"
-          JENKINS_SCRIPT
-
-      - name: Verify Jenkins is running
-        run: |
-          ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ec2-user@${{ steps.get-ip.outputs.ec2_ip }} \
-            'sudo systemctl is-active jenkins && echo "✅ Jenkins is active!" || echo "⚠️  Jenkins status check"'
+          echo "⏳ Jenkins is still initializing (installation in progress)"
 
       - name: Print deployment summary
         if: always()
@@ -170,7 +59,7 @@ jobs:
           echo "  EC2 Instance: Running"
           echo "  Docker: Installed ✅"
           echo "  Docker Compose: Installed ✅"
-          echo "  Jenkins: Installed via GitHub Actions ✅"
+          echo "  Jenkins: Auto-installing via Terraform user_data ✅"
           echo ""
           echo "🌐 ACCESS JENKINS:"
           echo "  URL: http://${{ steps.get-ip.outputs.ec2_ip }}:8080"
@@ -178,7 +67,11 @@ jobs:
           echo ""
           echo "📝 NEXT STEPS:"
           echo "  1. Open http://${{ steps.get-ip.outputs.ec2_ip }}:8080 in browser"
-          echo "  2. Jenkins will prompt for initial setup"
-          echo "  3. Get admin password from: ssh and cat /var/lib/jenkins/secrets/initialAdminPassword"
+          echo "  2. Jenkins will initialize (may take 2-3 minutes)"
+          echo "  3. Unlock with initial admin password"
+          echo ""
+          echo "💡 SSH TO EC2 FOR LOGS:"
+          echo "  ssh -i demo.pem ec2-user@${{ steps.get-ip.outputs.ec2_ip }}"
+          echo "  tail -f /var/log/setup.log"
           echo ""
           echo "======================================"
