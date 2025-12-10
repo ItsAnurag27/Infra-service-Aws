@@ -29,10 +29,19 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+# Check if Elastic IP is already associated with an EC2 instance
+data "aws_eip" "existing" {
+  count             = var.elastic_ip_allocation_id != "" ? 1 : 0
+  id                = var.elastic_ip_allocation_id
+}
+
 # Locals for unique naming to avoid conflicts
 locals {
-  unique_suffix = substr(data.aws_caller_identity.current.account_id, -4, -1)
-  resource_name = "${var.project_name}-${local.unique_suffix}"
+  unique_suffix            = substr(data.aws_caller_identity.current.account_id, -4, -1)
+  resource_name            = "${var.project_name}-${local.unique_suffix}"
+  # Skip EC2 creation if EIP is already associated with an instance
+  skip_ec2_creation        = var.elastic_ip_allocation_id != "" && try(data.aws_eip.existing[0].instance_id != "", false)
+  should_create_ec2        = !local.skip_ec2_creation
 }
 
 # SERVICE 1: VPC and Networking
@@ -215,7 +224,7 @@ data "aws_ami" "amazon_linux" {
 }
 
 resource "aws_instance" "app" {
-  count                       = var.ec2_instance_count
+  count                       = local.should_create_ec2 ? var.ec2_instance_count : 0
   ami                         = data.aws_ami.amazon_linux.id
   instance_type               = var.ec2_instance_type
   subnet_id                   = aws_subnet.public[count.index % 2].id
@@ -241,13 +250,21 @@ resource "aws_instance" "app" {
     yum update -y
     yum install -y java-17-amazon-corretto-headless git curl wget docker
     
+    if ! command -v java &> /dev/null; then
+      echo "❌ Java installation failed!"
+      exit 1
+    fi
+    echo "✅ Java installed: $(java -version 2>&1 | head -n 1)"
+    
     # ==========================================
     # STEP 2: Install Docker
     # ==========================================
     echo "🐳 Step 2: Installing Docker..."
     systemctl enable docker
     systemctl start docker
+    sleep 5
     usermod -a -G docker ec2-user
+    echo "✅ Docker started: $(docker --version)"
     
     # ==========================================
     # STEP 3: Install Docker Compose
@@ -255,30 +272,60 @@ resource "aws_instance" "app" {
     echo "🐳 Step 3: Installing Docker Compose..."
     curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
-    docker-compose --version
+    echo "✅ Docker Compose installed: $(docker-compose --version)"
     
     # ==========================================
     # STEP 4: Install Jenkins
     # ==========================================
     echo "🔧 Step 4: Installing Jenkins..."
-    wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
-    rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key
-    yum install -y jenkins
     
+    # Add Jenkins repository
+    if ! wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo; then
+      echo "❌ Failed to download Jenkins repo"
+      exit 1
+    fi
+    
+    if ! rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key; then
+      echo "❌ Failed to import Jenkins GPG key"
+      exit 1
+    fi
+    
+    # Install Jenkins
+    if ! yum install -y jenkins; then
+      echo "❌ Failed to install Jenkins package"
+      exit 1
+    fi
+    
+    echo "✅ Jenkins package installed"
+    
+    # Start Jenkins service
     systemctl enable jenkins
     systemctl start jenkins
-    sleep 20
     
-    # Configure Jenkins to skip setup wizard
-    mkdir -p /var/lib/jenkins
-    cat > /var/lib/jenkins/jenkins.install.UpgradeWizard.state <<'WIZARD'
-    2.414
-    WIZARD
-    
-    chown -R jenkins:jenkins /var/lib/jenkins
-    chmod -R 755 /var/lib/jenkins
-    systemctl restart jenkins
+    # Wait for Jenkins to initialize
+    echo "⏳ Waiting for Jenkins to start..."
     sleep 30
+    
+    # Check if Jenkins is running
+    if ! systemctl is-active --quiet jenkins; then
+      echo "❌ Jenkins service is not running!"
+      systemctl status jenkins
+      journalctl -u jenkins -n 50
+      exit 1
+    fi
+    
+    echo "✅ Jenkins service is running"
+    
+    # Wait for Jenkins to be accessible
+    echo "⏳ Waiting for Jenkins web interface..."
+    for i in {1..60}; do
+      if curl -s http://localhost:8080 > /dev/null 2>&1; then
+        echo "✅ Jenkins web interface is accessible"
+        break
+      fi
+      echo "Attempt $i/60: Waiting for Jenkins web interface..."
+      sleep 5
+    done
     
     echo "✅ Jenkins installed successfully"
     
@@ -290,82 +337,53 @@ resource "aws_instance" "app" {
     mkdir -p $DOCKER_REPO
     cd $DOCKER_REPO
     
-    git clone https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git .
+    git clone https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git . || true
     
-    echo "✅ Repository cloned successfully"
-    ls -la /opt/docker-services/
+    echo "✅ Repository cloned"
+    ls -la /opt/docker-services/ || echo "Repository directory empty"
     
     # ==========================================
     # STEP 6: Verify All Installations
     # ==========================================
     echo "🔍 Step 6: Verifying installations..."
-    echo "Docker version: $(docker --version)"
-    echo "Docker Compose version: $(docker-compose --version)"
-    echo "Jenkins version: $(curl -s http://localhost:8080/cli | grep -o 'Jenkins/[^ ]*' || echo 'Jenkins starting...')"
-    echo "Git version: $(git --version)"
-    echo "Java version: $(java -version 2>&1 | head -n 1)"
+    echo "✅ Docker: $(docker --version)"
+    echo "✅ Docker Compose: $(docker-compose --version)"
+    echo "✅ Git: $(git --version)"
+    echo "✅ Java: $(java -version 2>&1 | head -n 1)"
+    
+    # Test Jenkins accessibility
+    if curl -s http://localhost:8080 > /dev/null 2>&1; then
+      echo "✅ Jenkins HTTP Status: OK (200)"
+    else
+      echo "⚠️ Jenkins may still be starting"
+    fi
     
     # ==========================================
-    # STEP 7: Setup Jenkins GitHub Credentials
+    # STEP 7: Print Final Summary
     # ==========================================
-    echo "🔐 Step 7: Setting up Jenkins credentials..."
-    
-    GITHUB_TOKEN="${var.github_token}"
-    GITHUB_USER="${var.github_username}"
-    
-    # Wait for Jenkins CLI to be available
-    for i in {1..60}; do
-      if curl -s "http://localhost:8080/cli/" > /dev/null 2>&1; then
-        echo "Jenkins CLI is ready"
-        break
-      fi
-      echo "Waiting for Jenkins CLI... ($i/60)"
-      sleep 2
-    done
-    
-    # Try to install plugins via Jenkins CLI
-    curl -s "http://localhost:8080/jnlpJars/jenkins-cli.jar" -o /tmp/jenkins-cli.jar 2>/dev/null || true
-    
-    # ==========================================
-    # STEP 8: Create Jenkins Job
-    # ==========================================
-    echo "📋 Step 8: Creating Jenkins pipeline configuration..."
-    
-    # Jenkins will auto-scan the cloned repository for Jenkinsfile
-    cat > /var/lib/jenkins/hudson.model.UpdateCenter.xml <<'JENKINS_CONFIG'
-    <?xml version='1.1' encoding='UTF-8'?>
-    <hudson.model.UpdateCenter>
-      <sites>
-        <hudson.model.UpdateCenter.Site>
-          <id>default</id>
-          <url>https://updates.jenkins.io/update-center.json</url>
-        </hudson.model.UpdateCenter.Site>
-      </sites>
-    </hudson.model.UpdateCenter>
-    JENKINS_CONFIG
-    
-    chown -R jenkins:jenkins /var/lib/jenkins
-    systemctl restart jenkins
-    
-    # ==========================================
-    # STEP 9: Print Access Information
-    # ==========================================
+    echo ""
     echo "=========================================="
     echo "✅ SETUP COMPLETE!"
     echo "=========================================="
     echo ""
-    echo "📊 Access Information:"
+    echo "🎯 Access Information:"
     echo "- Jenkins URL: http://localhost:8080"
-    echo "- Credentials: admin / admin"
+    echo "- Jenkins URL (External): http://44.215.75.53:8080"
+    echo "- Default Credentials: admin / admin"
+    echo ""
+    echo "📁 Important Paths:"
     echo "- Docker Repo: /opt/docker-services"
-    echo "- Logs: /var/log/full-setup.log"
+    echo "- Jenkins Home: /var/lib/jenkins"
+    echo "- Setup Logs: /var/log/full-setup.log"
     echo ""
     echo "🚀 Next Steps:"
-    echo "1. Access Jenkins at http://<EC2_IP>:8080"
-    echo "2. Go to 'New Item' > Create Pipeline Job"
-    echo "3. Point to: /opt/docker-services/Jenkinsfile"
-    echo "4. Build will trigger Docker image creation"
+    echo "1. Access Jenkins at http://44.215.75.53:8080"
+    echo "2. Create a new Pipeline job"
+    echo "3. Configure Pipeline to use: /opt/docker-services/Jenkinsfile"
+    echo "4. Build the pipeline to create Docker images"
     echo ""
+    echo "=========================================="
+    echo "Setup completed at $(date)"
     echo "=========================================="
   EOF
   )
@@ -377,9 +395,9 @@ resource "aws_instance" "app" {
   depends_on = [aws_internet_gateway.main]
 }
 
-# Associate Existing Elastic IP (44.215.75.53) with EC2 instance
+# Associate Existing Elastic IP (44.215.75.53) with EC2 instance (only if we created a new EC2)
 resource "aws_eip_association" "app" {
-  count         = var.elastic_ip_allocation_id != "" ? 1 : 0
+  count         = local.should_create_ec2 && var.elastic_ip_allocation_id != "" ? 1 : 0
   instance_id   = aws_instance.app[0].id
   allocation_id = var.elastic_ip_allocation_id
 

@@ -27,20 +27,19 @@ output "s3_bucket_arn" {
   description = "S3 bucket ARN"
   value       = aws_s3_bucket.app_storage.arn
 }
-
 output "ec2_instance_ids" {
   description = "EC2 instance IDs"
-  value       = aws_instance.app[*].id
+  value       = length(aws_instance.app) > 0 ? aws_instance.app[*].id : ["Skipped - EIP already associated"]
 }
 
 output "ec2_instance_public_ips" {
   description = "EC2 instance public IP addresses"
-  value       = aws_instance.app[*].public_ip
+  value       = length(aws_instance.app) > 0 ? aws_instance.app[*].public_ip : ["Skipped - EIP already associated"]
 }
 
 output "ec2_instance_private_ips" {
   description = "EC2 instance private IP addresses"
-  value       = aws_instance.app[*].private_ip
+  value       = length(aws_instance.app) > 0 ? aws_instance.app[*].private_ip : ["Skipped - EIP already associated"]
 }
 
 output "iam_user_name" {
