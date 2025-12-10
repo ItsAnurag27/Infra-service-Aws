@@ -56,7 +56,7 @@ jobs:
         id: plan
         run: |
           cd terraform
-          terraform plan -no-color -out=tfplan
+          terraform plan -no-color
         continue-on-error: true
 
       - name: Comment PR with Plan
@@ -66,14 +66,6 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Status:** Plan Completed" >> $GITHUB_STEP_SUMMARY
           echo "Terraform plan completed successfully. Review the changes before merging." >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload Plan Artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan-${{ github.run_id }}
-          path: terraform/tfplan
-          retention-days: 5
 
   terraform-apply:
     runs-on: ubuntu-latest
@@ -97,32 +89,16 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
-      - name: Download Plan Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan-${{ github.run_id }}
-          path: terraform/
-        continue-on-error: true
-
       - name: Terraform Init
         run: |
           cd terraform
           terraform init
 
-      - name: Regenerate Plan (if needed)
-        run: |
-          cd terraform
-          if [ ! -f tfplan ]; then
-            echo "Plan artifact not found, regenerating..."
-            terraform plan -out=tfplan
-          fi
-        shell: bash
-
       - name: Terraform Apply
         id: apply
         run: |
           cd terraform
-          terraform apply -no-color -auto-approve tfplan
+          terraform apply -no-color -auto-approve
         continue-on-error: true
 
       - name: Get Terraform Outputs
