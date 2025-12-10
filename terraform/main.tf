@@ -29,23 +29,75 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+# Check if VPC already exists with our naming pattern
+data "aws_vpcs" "existing_vpc" {
+  filter {
+    name   = "tag:Name"
+    values = ["${var.project_name}-${substr(data.aws_caller_identity.current.account_id, -4, -1)}-vpc"]
+  }
+}
+
+# Check if Security Group already exists
+data "aws_security_group" "existing_sg" {
+  count = length(data.aws_vpcs.existing_vpc.ids) > 0 ? 1 : 0
+  
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpcs.existing_vpc.ids[0]]
+  }
+  
+  filter {
+    name   = "tag:Name"
+    values = ["${var.project_name}-${substr(data.aws_caller_identity.current.account_id, -4, -1)}-ec2-sg"]
+  }
+}
+
+# Check if S3 bucket already exists with our naming pattern
+data "aws_s3_bucket" "existing" {
+  bucket = "${var.project_name}-${substr(data.aws_caller_identity.current.account_id, -4, -1)}-storage-*"
+}
+
 # Check if Elastic IP is already associated with an EC2 instance
 data "aws_eip" "existing" {
   count             = var.elastic_ip_allocation_id != "" ? 1 : 0
   id                = var.elastic_ip_allocation_id
 }
 
+# Check if IAM user already exists
+data "aws_iam_user" "existing" {
+  user_name = "${var.project_name}-${substr(data.aws_caller_identity.current.account_id, -4, -1)}-app-user"
+  depends_on = [data.aws_caller_identity.current]
+}
+
 # Locals for unique naming to avoid conflicts
 locals {
   unique_suffix            = substr(data.aws_caller_identity.current.account_id, -4, -1)
   resource_name            = "${var.project_name}-${local.unique_suffix}"
+  
+  # Skip VPC creation if it already exists
+  vpc_exists               = length(data.aws_vpcs.existing_vpc.ids) > 0
+  should_create_vpc        = !local.vpc_exists
+  
+  # Skip Security Group creation if it already exists
+  sg_exists                = length(data.aws_security_group.existing_sg) > 0 && try(data.aws_security_group.existing_sg[0].id != "", false)
+  should_create_sg         = !local.sg_exists && local.should_create_vpc
+  
+  # Skip S3 bucket creation if it already exists
+  s3_exists                = try(data.aws_s3_bucket.existing.id != "", false)
+  should_create_s3         = !local.s3_exists
+  
   # Skip EC2 creation if EIP is already associated with an instance
   skip_ec2_creation        = var.elastic_ip_allocation_id != "" && try(data.aws_eip.existing[0].instance_id != "", false)
   should_create_ec2        = !local.skip_ec2_creation
+  
+  # Skip IAM user creation if it already exists
+  iam_user_exists          = try(data.aws_iam_user.existing.arn != "", false)
+  should_create_iam_user   = !local.iam_user_exists
 }
 
 # SERVICE 1: VPC and Networking
 resource "aws_vpc" "main" {
+  count                = local.should_create_vpc ? 1 : 0
   cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
   enable_dns_support   = true
@@ -56,7 +108,8 @@ resource "aws_vpc" "main" {
 }
 
 resource "aws_internet_gateway" "main" {
-  vpc_id = aws_vpc.main.id
+  count  = local.should_create_vpc ? 1 : 0
+  vpc_id = aws_vpc.main[0].id
 
   tags = {
     Name = "${var.project_name}-igw"
@@ -64,20 +117,20 @@ resource "aws_internet_gateway" "main" {
 }
 
 resource "aws_subnet" "public" {
-  count                   = 2
-  vpc_id                  = aws_vpc.main.id
+  count                   = local.should_create_vpc ? 2 : 0
+  vpc_id                  = aws_vpc.main[0].id
   cidr_block              = "10.0.${count.index + 1}.0/24"
   availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "${var.project_name}-public-subnet-${count.index + 1}"
+    Name = "${local.resource_name}-public-subnet-${count.index + 1}"
   }
 }
 
 resource "aws_subnet" "private" {
-  count             = 2
-  vpc_id            = aws_vpc.main.id
+  count             = local.should_create_vpc ? 2 : 0
+  vpc_id            = aws_vpc.main[0].id
   cidr_block        = "10.0.${count.index + 101}.0/24"
   availability_zone = data.aws_availability_zones.available.names[count.index]
 
@@ -87,29 +140,31 @@ resource "aws_subnet" "private" {
 }
 
 resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
+  count  = local.should_create_vpc ? 1 : 0
+  vpc_id = aws_vpc.main[0].id
 
   route {
     cidr_block      = "0.0.0.0/0"
-    gateway_id      = aws_internet_gateway.main.id
+    gateway_id      = aws_internet_gateway.main[0].id
   }
 
   tags = {
-    Name = "${var.project_name}-public-rt"
+    Name = "${local.resource_name}-public-rt"
   }
 }
 
 resource "aws_route_table_association" "public" {
-  count          = 2
+  count          = local.should_create_vpc ? 2 : 0
   subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
+  route_table_id = aws_route_table.public[0].id
 }
 
 # SERVICE 2: Security Group (for EC2)
 resource "aws_security_group" "ec2" {
-  name        = "${var.project_name}-ec2-sg"
+  count       = local.should_create_sg ? 1 : 0
+  name        = "${local.resource_name}-ec2-sg"
   description = "Security group for EC2 instances"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = aws_vpc.main[0].id
 
   ingress {
     from_port   = 22
@@ -228,7 +283,7 @@ resource "aws_instance" "app" {
   ami                         = data.aws_ami.amazon_linux.id
   instance_type               = var.ec2_instance_type
   subnet_id                   = aws_subnet.public[count.index % 2].id
-  vpc_security_group_ids      = [aws_security_group.ec2.id]
+  vpc_security_group_ids      = [aws_security_group.ec2[0].id]
   associate_public_ip_address = true
 
   user_data = base64encode(<<-EOF
@@ -406,6 +461,7 @@ resource "aws_eip_association" "app" {
 
 # SERVICE 4: S3 Bucket for Storage
 resource "aws_s3_bucket" "app_storage" {
+  count  = local.should_create_s3 ? 1 : 0
   bucket = "${local.resource_name}-storage-${formatdate("YYYYMMDD-hhmm", timestamp())}"
 
   tags = {
@@ -414,14 +470,16 @@ resource "aws_s3_bucket" "app_storage" {
 }
 
 resource "aws_s3_bucket_versioning" "app_storage" {
-  bucket = aws_s3_bucket.app_storage.id
+  count  = local.should_create_s3 ? 1 : 0
+  bucket = aws_s3_bucket.app_storage[0].id
   versioning_configuration {
     status = "Enabled"
   }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "app_storage" {
-  bucket = aws_s3_bucket.app_storage.id
+  count  = local.should_create_s3 ? 1 : 0
+  bucket = aws_s3_bucket.app_storage[0].id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -431,7 +489,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "app_storage" {
 }
 
 resource "aws_s3_bucket_public_access_block" "app_storage" {
-  bucket = aws_s3_bucket.app_storage.id
+  count  = local.should_create_s3 ? 1 : 0
+  bucket = aws_s3_bucket.app_storage[0].id
 
   block_public_acls       = true
   block_public_policy     = true
@@ -441,6 +500,7 @@ resource "aws_s3_bucket_public_access_block" "app_storage" {
 
 # SERVICE 5: IAM User
 resource "aws_iam_user" "app_user" {
+  count = local.should_create_iam_user ? 1 : 0
   name = "${local.resource_name}-app-user"
 
   tags = {
@@ -449,12 +509,14 @@ resource "aws_iam_user" "app_user" {
 }
 
 resource "aws_iam_access_key" "app_user" {
-  user = aws_iam_user.app_user.name
+  count = local.should_create_iam_user ? 1 : 0
+  user = aws_iam_user.app_user[0].name
 }
 
 resource "aws_iam_user_policy" "s3_access" {
+  count  = local.should_create_iam_user ? 1 : 0
   name   = "${var.project_name}-s3-access"
-  user   = aws_iam_user.app_user.name
+  user   = aws_iam_user.app_user[0].name
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -466,8 +528,8 @@ resource "aws_iam_user_policy" "s3_access" {
           "s3:ListBucket"
         ]
         Resource = [
-          aws_s3_bucket.app_storage.arn,
-          "${aws_s3_bucket.app_storage.arn}/*"
+          aws_s3_bucket.app_storage[0].arn,
+          "${aws_s3_bucket.app_storage[0].arn}/*"
         ]
       }
     ]
@@ -475,8 +537,9 @@ resource "aws_iam_user_policy" "s3_access" {
 }
 
 resource "aws_iam_user_policy" "ec2_access" {
+  count  = local.should_create_iam_user ? 1 : 0
   name   = "${var.project_name}-ec2-access"
-  user   = aws_iam_user.app_user.name
+  user   = aws_iam_user.app_user[0].name
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [

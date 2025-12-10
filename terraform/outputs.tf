@@ -1,6 +1,6 @@
 output "vpc_id" {
   description = "VPC ID"
-  value       = aws_vpc.main.id
+  value       = length(aws_vpc.main) > 0 ? aws_vpc.main[0].id : "Skipped - VPC already exists"
 }
 
 output "public_subnet_ids" {
@@ -10,22 +10,22 @@ output "public_subnet_ids" {
 
 output "security_group_id" {
   description = "EC2 Security Group ID"
-  value       = aws_security_group.ec2.id
+  value       = length(aws_security_group.ec2) > 0 ? aws_security_group.ec2[0].id : "Skipped - Security Group already exists"
 }
 
 output "security_group_name" {
   description = "EC2 Security Group Name"
-  value       = aws_security_group.ec2.name
+  value       = length(aws_security_group.ec2) > 0 ? aws_security_group.ec2[0].name : "Skipped - Security Group already exists"
 }
 
 output "s3_bucket_name" {
   description = "S3 bucket name"
-  value       = aws_s3_bucket.app_storage.id
+  value       = length(aws_s3_bucket.app_storage) > 0 ? aws_s3_bucket.app_storage[0].id : "Skipped - S3 bucket already exists"
 }
 
 output "s3_bucket_arn" {
   description = "S3 bucket ARN"
-  value       = aws_s3_bucket.app_storage.arn
+  value       = length(aws_s3_bucket.app_storage) > 0 ? aws_s3_bucket.app_storage[0].arn : "Skipped - S3 bucket already exists"
 }
 output "ec2_instance_ids" {
   description = "EC2 instance IDs"
@@ -44,17 +44,17 @@ output "ec2_instance_private_ips" {
 
 output "iam_user_name" {
   description = "IAM user name"
-  value       = aws_iam_user.app_user.name
+  value       = length(aws_iam_user.app_user) > 0 ? aws_iam_user.app_user[0].name : data.aws_iam_user.existing.user_name
 }
 
 output "iam_user_arn" {
   description = "IAM user ARN"
-  value       = aws_iam_user.app_user.arn
+  value       = length(aws_iam_user.app_user) > 0 ? aws_iam_user.app_user[0].arn : data.aws_iam_user.existing.arn
 }
 
 output "iam_access_key_id" {
   description = "IAM user access key ID"
-  value       = aws_iam_access_key.app_user.id
+  value       = length(aws_iam_access_key.app_user) > 0 ? aws_iam_access_key.app_user[0].id : "Existing user - check AWS console"
   sensitive   = true
 }
 
