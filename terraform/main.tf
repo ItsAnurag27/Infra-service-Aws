@@ -292,8 +292,8 @@ resource "aws_instance" "app" {
 
   user_data = base64encode(<<-EOF
     #!/bin/bash
-    set -e
-
+    # Remove strict error handling - we want to continue and log errors instead
+    
     # Log all output for debugging
     exec > >(tee /var/log/full-setup.log)
     exec 2>&1
@@ -306,90 +306,88 @@ resource "aws_instance" "app" {
     # STEP 1: Update and Install Base Packages
     # ==========================================
     echo "📦 Step 1: Installing base packages..."
-    yum update -y
-    yum install -y java-17-amazon-corretto-headless git curl wget docker
+    yum update -y || echo "⚠️  yum update had issues, continuing..."
+    yum install -y java-17-amazon-corretto-headless git curl wget docker || echo "⚠️  Some packages failed to install"
 
-    if ! command -v java &> /dev/null; then
+    if command -v java &> /dev/null; then
+      echo "✅ Java installed: $(java -version 2>&1 | head -n 1)"
+    else
       echo "❌ Java installation failed!"
-      exit 1
     fi
-    echo "✅ Java installed: $(java -version 2>&1 | head -n 1)"
 
     # ==========================================
     # STEP 2: Install Docker
     # ==========================================
     echo "🐳 Step 2: Installing Docker..."
-    systemctl enable docker
-    systemctl start docker
-    sleep 5
-    usermod -a -G docker ec2-user
-    echo "✅ Docker started: $(docker --version)"
+    if systemctl enable docker 2>/dev/null && systemctl start docker 2>/dev/null; then
+      sleep 5
+      usermod -a -G docker ec2-user || true
+      if command -v docker &> /dev/null; then
+        echo "✅ Docker installed: $(docker --version)"
+      else
+        echo "⚠️  Docker command not found, trying alternative..."
+      fi
+    else
+      echo "⚠️  Docker service start had issues"
+    fi
 
     # ==========================================
     # STEP 3: Install Docker Compose
     # ==========================================
     echo "🐳 Step 3: Installing Docker Compose..."
-    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-    echo "✅ Docker Compose installed: $(docker-compose --version)"
+    if curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose 2>/dev/null; then
+      chmod +x /usr/local/bin/docker-compose
+      if command -v docker-compose &> /dev/null; then
+        echo "✅ Docker Compose installed: $(docker-compose --version)"
+      else
+        echo "⚠️  Docker Compose install reported success but command not found"
+      fi
+    else
+      echo "⚠️  Failed to download Docker Compose"
+    fi
 
     # ==========================================
-    # STEP 4: Install Jenkins (FIXED)
+    # STEP 4: Install Jenkins
     # ==========================================
     echo "🔧 Step 4: Installing Jenkins..."
 
-    set -o pipefail
-
-    # Add Jenkins repo
-    cat >/etc/yum.repos.d/jenkins.repo <<'EOR'
+    # Add Jenkins repository directly
+    cat > /etc/yum.repos.d/jenkins.repo << 'JENKINS_REPO_EOF'
 [jenkins]
-name=Jenkins-stable
+name=Jenkins
 baseurl=https://pkg.jenkins.io/redhat-stable
 gpgcheck=1
 gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
-EOR
+JENKINS_REPO_EOF
 
-    # Import Jenkins GPG key
-    rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+    # Try to import GPG key
+    rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key 2>/dev/null || echo "⚠️  GPG key import skipped"
 
-    # Install dependencies
-    yum install -y fontconfig java-17-amazon-corretto-headless
+    # Install Jenkins and dependencies
+    yum install -y fontconfig java-17-amazon-corretto-headless 2>&1 | tee /var/log/jenkins-deps.log || echo "⚠️  Dependency install had issues"
+    yum install -y jenkins 2>&1 | tee /var/log/jenkins-install.log || echo "⚠️  Jenkins install reported issues"
 
-    # Install Jenkins with logging
-    yum install -y jenkins 2>&1 | tee /var/log/jenkins-install.log
-    install_status=$${PIPESTATUS[0]}
-
-    if [ "$install_status" -ne 0 ]; then
-      echo "❌ Jenkins installation failed, see /var/log/jenkins-install.log"
-      exit 1
-    fi
-
-    echo "✅ Jenkins package installed"
-
-    # Enable and start Jenkins
-    systemctl daemon-reload
-    systemctl enable jenkins
-    systemctl start jenkins
-
-    echo "⏳ Waiting for Jenkins to start..."
-    for i in {1..60}; do
+    # Start Jenkins
+    if systemctl daemon-reload && systemctl enable jenkins && systemctl start jenkins; then
+      echo "⏳ Waiting for Jenkins to start..."
+      sleep 10
+      
       if systemctl is-active --quiet jenkins; then
         echo "✅ Jenkins service is running"
-        break
+      else
+        echo "⚠️  Jenkins service status unclear"
+        systemctl status jenkins || true
       fi
-      echo "Waiting for Jenkins... ($i/60)"
-      sleep 2
-    done
-
-    if ! systemctl is-active --quiet jenkins; then
-      echo "❌ Jenkins failed to start. Check: systemctl status jenkins"
+    else
+      echo "⚠️  Jenkins systemctl commands failed"
     fi
 
-    # Check web endpoint
+    # Check web interface
+    sleep 5
     if curl -s http://localhost:8080 >/dev/null 2>&1; then
-      echo "✅ Jenkins web interface is accessible on port 8080"
+      echo "✅ Jenkins web interface is accessible"
     else
-      echo "⚠️ Jenkins HTTP endpoint not responding yet"
+      echo "⚠️  Jenkins HTTP endpoint not responding yet (may still be starting)"
     fi
 
     # ==========================================
@@ -401,66 +399,60 @@ EOR
     cd $DOCKER_REPO
 
     echo "Cloning from: https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git"
-    if git clone https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git . 2>&1 | tee -a /var/log/git-clone.log; then
+    if git clone https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git . 2>&1 | tee /var/log/git-clone.log; then
       echo "✅ Repository cloned successfully"
-      ls -la /opt/docker-services/
+      ls -la /opt/docker-services/ | head -20
     else
-      echo "⚠️  Git clone failed or returned warning. Checking directory..."
-      if [ -d /opt/docker-services/.git ]; then
-        echo "✅ Repository directory exists with .git"
-        ls -la /opt/docker-services/
-      else
-        echo "⚠️  Repository not fully cloned. Directory contents:"
-        ls -la /opt/docker-services/ || echo "Directory is empty"
-        echo "Git clone log:"
-        cat /var/log/git-clone.log || echo "No log available"
-      fi
+      echo "⚠️  Git clone may have failed. Directory contents:"
+      ls -la /opt/docker-services/ || echo "Directory is empty"
     fi
 
     # ==========================================
     # STEP 6: Verify All Installations
     # ==========================================
-    echo "🔍 Step 6: Verifying installations..."
-    echo "✅ Docker: $(docker --version)"
-    echo "✅ Docker Compose: $(docker-compose --version)"
-    echo "✅ Git: $(git --version)"
-    echo "✅ Java: $(java -version 2>&1 | head -n 1)"
-
-    if curl -s http://localhost:8080 > /dev/null 2>&1; then
-      echo "✅ Jenkins HTTP Status: OK (200)"
-    else
-      echo "⚠️ Jenkins may still be starting"
-    fi
+    echo ""
+    echo "🔍 Step 6: Final Verification"
+    echo "---"
+    
+    echo -n "Docker: "
+    docker --version 2>/dev/null || echo "NOT FOUND"
+    
+    echo -n "Docker Compose: "
+    docker-compose --version 2>/dev/null || echo "NOT FOUND"
+    
+    echo -n "Git: "
+    git --version 2>/dev/null || echo "NOT FOUND"
+    
+    echo -n "Java: "
+    java -version 2>&1 | head -n 1 || echo "NOT FOUND"
+    
+    echo -n "Jenkins Service: "
+    systemctl is-active jenkins 2>/dev/null && echo "RUNNING" || echo "NOT RUNNING"
 
     # ==========================================
-    # STEP 7: Print Final Summary
+    # STEP 7: Final Summary
     # ==========================================
     echo ""
     echo "=========================================="
     echo "✅ SETUP COMPLETE!"
     echo "=========================================="
     echo ""
-    echo "🎯 Access Information:"
-    echo "- Jenkins URL (Local): http://localhost:8080"
-    echo "- Jenkins URL (External): http://<YOUR-EIP>:8080"
+    echo "📋 Setup Summary:"
+    echo "- Docker: $(docker --version 2>/dev/null || echo 'CHECK LOGS')"
+    echo "- Docker Compose: $(docker-compose --version 2>/dev/null || echo 'CHECK LOGS')"
+    echo "- Jenkins: $(systemctl is-active jenkins 2>/dev/null && echo 'RUNNING' || echo 'CHECK LOGS')"
     echo ""
-    echo "🔐 To unlock Jenkins for the first time, run on the instance:"
+    echo "📝 Log Files:"
+    echo "- Full Setup: /var/log/full-setup.log"
+    echo "- Jenkins Install: /var/log/jenkins-install.log"
+    echo "- Git Clone: /var/log/git-clone.log"
+    echo ""
+    echo "🔐 Initial Jenkins Admin Password:"
     echo "  sudo cat /var/lib/jenkins/secrets/initialAdminPassword"
     echo ""
-    echo "📁 Important Paths:"
-    echo "- Docker Repo: /opt/docker-services"
-    echo "- Jenkins Home: /var/lib/jenkins"
-    echo "- Setup Logs: /var/log/full-setup.log"
-    echo ""
-    echo "🚀 Next Steps:"
-    echo "1. Access Jenkins at http://<YOUR-EIP>:8080"
-    echo "2. Complete initial setup using the admin password above"
-    echo "3. Create a new Pipeline job"
-    echo "4. Use /opt/docker-services/Jenkinsfile as the pipeline script"
-    echo ""
-    echo "=========================================="
+    echo "==========================================="
     echo "Setup completed at $(date)"
-    echo "=========================================="
+    echo "==========================================="
   EOF
   )
 
