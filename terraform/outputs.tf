@@ -61,7 +61,7 @@ output "iam_access_key_id" {
 
 output "ec2_elastic_ip_association" {
   description = "Elastic IP association with EC2 instance"
-  value       = try(aws_eip_association.app[0].id, "Not associated")
+  value       = try(aws_eip_association.app.id, "Not associated")
 }
 
 output "ec2_names" {
@@ -76,7 +76,7 @@ output "jenkins_url" {
 
 output "jenkins_elastic_ip_url" {
   description = "Jenkins URL using Elastic IP (if configured)"
-  value       = try("http://44.215.75.53:8080", "Configure elastic_ip_allocation_id")
+  value       = "http://44.215.75.53:8080"
 }
 
 output "jenkins_credentials" {
@@ -102,16 +102,10 @@ output "jenkins_deployment_note" {
 
 output "elastic_ip_address" {
   description = "Elastic IP address associated with EC2 instance"
-  value       = try(
-    var.elastic_ip_allocation_id != "" ? "Already allocated: 44.215.75.53" : aws_eip.app[0].public_ip,
-    "Check AWS Console for EIP status"
-  )
+  value       = "44.215.75.53"
 }
 
 output "elastic_ip_allocation_id" {
   description = "Elastic IP allocation ID"
-  value       = try(
-    var.elastic_ip_allocation_id != "" ? var.elastic_ip_allocation_id : aws_eip.app[0].id,
-    "No EIP configured"
-  )
+  value       = var.elastic_ip_allocation_id
 }
