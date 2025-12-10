@@ -64,3 +64,9 @@ variable "github_username" {
   type        = string
   default     = ""
 }
+
+variable "ec2_key_name" {
+  description = "Name of the EC2 keypair to use for SSH access"
+  type        = string
+  default     = "demo"
+}

@@ -279,6 +279,7 @@ resource "aws_instance" "app" {
   count                       = local.should_create_ec2 ? var.ec2_instance_count : 0
   ami                         = data.aws_ami.amazon_linux.id
   instance_type               = var.ec2_instance_type
+  key_name                    = var.ec2_key_name
   subnet_id                   = local.should_create_vpc ? aws_subnet.public[count.index % 2].id : data.aws_subnets.existing_public[0].ids[count.index % length(data.aws_subnets.existing_public[0].ids)]
   vpc_security_group_ids      = local.should_create_sg ? [aws_security_group.ec2[0].id] : [data.aws_security_groups.existing_sg.ids[0]]
   associate_public_ip_address = true
