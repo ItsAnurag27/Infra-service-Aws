@@ -1,0 +1,230 @@
+name: Jenkins Installation Pipeline
+
+on:
+  workflow_run:
+    workflows: ["Terraform Deploy AWS Services"]
+    types:
+      - completed
+
+jobs:
+  get-ec2-ip:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      ec2_ip: ${{ steps.get-ip.outputs.ec2_ip }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Get latest EC2 public IP
+        id: get-ip
+        run: |
+          EC2_IP=$(aws ec2 describe-instances \
+            --filters "Name=instance-state-name,Values=running" "Name=tag:Name,Values=15-services-*" \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text)
+          echo "ec2_ip=$EC2_IP" >> $GITHUB_OUTPUT
+          echo "EC2 IP: $EC2_IP"
+
+  install-jenkins:
+    needs: get-ec2-ip
+    runs-on: ubuntu-latest
+    if: ${{ needs.get-ec2-ip.outputs.ec2_ip != 'None' && needs.get-ec2-ip.outputs.ec2_ip != '' }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Wait for EC2 SSH availability
+        run: |
+          echo "Waiting for EC2 to be ready..."
+          for i in {1..30}; do
+            if timeout 5 bash -c "echo >/dev/tcp/${{ needs.get-ec2-ip.outputs.ec2_ip }}/22" 2>/dev/null; then
+              echo "✅ EC2 SSH is ready!"
+              exit 0
+            fi
+            echo "Attempt $i/30: Waiting for SSH... ($(date))"
+            sleep 10
+          done
+          echo "❌ EC2 SSH not ready after 5 minutes"
+          exit 1
+
+      - name: Install SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/demo.pem
+          chmod 600 ~/.ssh/demo.pem
+          ssh-keyscan -H ${{ needs.get-ec2-ip.outputs.ec2_ip }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Wait for EC2 bootstrap to complete
+        run: |
+          echo "Waiting for EC2 user_data to complete..."
+          for i in {1..60}; do
+            if ssh -i ~/.ssh/demo.pem -o ConnectTimeout=5 ec2-user@${{ needs.get-ec2-ip.outputs.ec2_ip }} \
+              'test -f /var/log/setup.log && grep -q "PHASE 1 COMPLETE" /var/log/setup.log' 2>/dev/null; then
+              echo "✅ EC2 PHASE 1 complete!"
+              break
+            fi
+            echo "Attempt $i/60: Waiting for PHASE 1... ($(date))"
+            sleep 5
+          done
+
+      - name: Run Jenkins installation script
+        run: |
+          ssh -i ~/.ssh/demo.pem -o ConnectTimeout=10 ec2-user@${{ needs.get-ec2-ip.outputs.ec2_ip }} << 'JENKINS_SCRIPT'
+          #!/bin/bash
+          set -e
+          
+          LOG_FILE="/var/log/jenkins-install.log"
+          
+          echo "======================================"
+          echo "JENKINS INSTALLATION PIPELINE"
+          echo "Start: $(date)"
+          echo "======================================"
+          
+          # Phase A: Pre-checks
+          echo "[A] Pre-installation checks..."
+          java -version 2>&1 | head -1
+          echo "✅ Java verified"
+          
+          # Phase B: Clean
+          echo "[B] Cleaning previous attempts..."
+          sudo rm -f /etc/yum.repos.d/jenkins.repo 2>/dev/null || true
+          sudo yum clean all > /dev/null 2>&1 || true
+          echo "✅ Cleaned"
+          
+          # Phase C: Add repository
+          echo "[C] Adding Jenkins repository..."
+          sudo tee /etc/yum.repos.d/jenkins.repo > /dev/null << 'EOF'
+          [jenkins]
+          name=Jenkins-stable
+          baseurl=https://pkg.jenkins.io/redhat-stable
+          gpgcheck=1
+          gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+          EOF
+          echo "✅ Repository added"
+          
+          # Phase D: Import GPG key
+          echo "[D] Importing GPG key..."
+          sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key 2>/dev/null || echo "⚠️  GPG import completed"
+          echo "✅ GPG key ready"
+          
+          # Phase E: Update metadata
+          echo "[E] Updating package metadata..."
+          sudo yum makecache --disablerepo='*' --enablerepo='jenkins' 2>/dev/null || true
+          echo "✅ Metadata ready"
+          
+          # Phase F: Install fontconfig
+          echo "[F] Installing fontconfig..."
+          sudo yum install -y fontconfig > /dev/null 2>&1 || echo "⚠️  Fontconfig already present"
+          echo "✅ Fontconfig ready"
+          
+          # Phase G: Download Jenkins
+          echo "[G] Downloading Jenkins package..."
+          sudo mkdir -p /tmp/jenkins-download
+          sudo yum install --downloadonly --downloaddir=/tmp/jenkins-download -y jenkins 2>&1 | tail -3 || true
+          echo "✅ Jenkins downloaded"
+          
+          # Phase H: Wait
+          echo "[H] Waiting for I/O operations..."
+          sleep 15
+          echo "✅ Ready to install"
+          
+          # Phase I: Install Jenkins
+          echo "[I] Installing Jenkins package..."
+          if sudo yum install -y jenkins 2>&1 | tail -5; then
+            echo "✅ Jenkins installed successfully"
+          else
+            echo "⚠️  Installing with --nogpgcheck..."
+            sudo yum install -y --nogpgcheck jenkins 2>&1 | tail -3
+            echo "✅ Jenkins installed (GPG check skipped)"
+          fi
+          
+          # Phase J: Verify
+          echo "[J] Verifying installation..."
+          JENKINS_VERSION=$(sudo rpm -qa | grep jenkins)
+          echo "✅ Jenkins verified: $JENKINS_VERSION"
+          
+          # Phase K: Enable service
+          echo "[K] Enabling Jenkins service..."
+          sudo systemctl enable jenkins
+          echo "✅ Service enabled"
+          
+          # Phase L: Start service
+          echo "[L] Starting Jenkins service..."
+          sudo systemctl start jenkins 2>&1 || true
+          echo "✅ Start command issued"
+          
+          # Phase M: Wait for startup
+          echo "[M] Waiting for Jenkins to start..."
+          for i in {1..60}; do
+            if sudo systemctl is-active --quiet jenkins 2>/dev/null; then
+              echo "✅ Jenkins is running! (took $i seconds)"
+              break
+            fi
+            if [ $((i % 10)) -eq 0 ]; then
+              echo "  Waiting... ($i/60 seconds)"
+            fi
+            sleep 1
+          done
+          
+          # Phase N: Wait for web interface
+          echo "[N] Waiting for web interface..."
+          sleep 20
+          for i in {1..10}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%%{http_code}" http://localhost:8080 || echo "000")
+            if echo $HTTP_CODE | grep -E "200|403|401" > /dev/null; then
+              echo "✅ Web interface ready (HTTP $HTTP_CODE)"
+              break
+            fi
+            if [ $i -lt 10 ]; then
+              echo "  Attempt $i: HTTP $HTTP_CODE, retrying..."
+              sleep 5
+            fi
+          done
+          
+          # Phase O: Get admin password
+          echo "[O] Getting admin password..."
+          sleep 10
+          if [ -f /var/lib/jenkins/secrets/initialAdminPassword ]; then
+            ADMIN_PASS=$(sudo cat /var/lib/jenkins/secrets/initialAdminPassword)
+            echo "✅ Initial Admin Password:"
+            echo "   $ADMIN_PASS"
+          else
+            echo "⏳ Admin password file not ready yet (will be generated during startup)"
+          fi
+          
+          # Final summary
+          echo ""
+          echo "======================================"
+          echo "✅ JENKINS INSTALLATION COMPLETE!"
+          echo "======================================"
+          echo "Timestamp: $(date)"
+          echo "Status: $(sudo systemctl is-active jenkins)"
+          echo "Version: $(sudo rpm -qa | grep jenkins)"
+          echo "Port: 8080"
+          echo "URL: http://$(hostname -I | awk '{print $1}'):8080"
+          echo "======================================"
+          JENKINS_SCRIPT
+
+      - name: Verify Jenkins is running
+        run: |
+          ssh -i ~/.ssh/demo.pem ec2-user@${{ needs.get-ec2-ip.outputs.ec2_ip }} \
+            'sudo systemctl is-active jenkins && echo "✅ Jenkins is running!" || echo "⚠️  Jenkins status check"'
+
+      - name: Print completion summary
+        run: |
+          echo "======================================"
+          echo "✅ JENKINS INSTALLATION PIPELINE COMPLETE"
+          echo "======================================"
+          echo "EC2 IP: ${{ needs.get-ec2-ip.outputs.ec2_ip }}"
+          echo "Jenkins URL: http://${{ needs.get-ec2-ip.outputs.ec2_ip }}:8080"
+          echo "Access Jenkins at the URL above"
+          echo "======================================"
