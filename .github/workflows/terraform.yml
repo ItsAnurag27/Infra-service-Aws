@@ -102,11 +102,21 @@ jobs:
         with:
           name: tfplan-${{ github.run_id }}
           path: terraform/
+        continue-on-error: true
 
       - name: Terraform Init
         run: |
           cd terraform
           terraform init
+
+      - name: Regenerate Plan (if needed)
+        run: |
+          cd terraform
+          if [ ! -f tfplan ]; then
+            echo "Plan artifact not found, regenerating..."
+            terraform plan -out=tfplan
+          fi
+        shell: bash
 
       - name: Terraform Apply
         id: apply
