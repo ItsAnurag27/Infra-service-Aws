@@ -316,26 +316,15 @@ echo "✅ Docker: \$(docker --version)"
 # PHASE 1C: Docker Compose installation
 echo ""
 echo "PHASE 1C: Docker Compose installation..."
-curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)" -o /usr/local/bin/docker-compose 2>/dev/null
+COMPOSE_VERSION="v2.24.0"
+curl -L "https://github.com/docker/compose/releases/download/\${COMPOSE_VERSION}/docker-compose-Linux-x86_64" -o /usr/local/bin/docker-compose
 chmod +x /usr/local/bin/docker-compose
 echo "✅ Docker Compose: \$(docker-compose --version)"
 
-# PHASE 1D: Prepare for Jenkins (repo + GPG key)
-echo ""
-echo "PHASE 1D: Preparing Jenkins repository..."
-cat >/etc/yum.repos.d/jenkins.repo <<'JENKINS_EOF'
-[jenkins]
-name=Jenkins-stable
-baseurl=https://pkg.jenkins.io/redhat-stable
-gpgcheck=1
-gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
-JENKINS_EOF
-rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key 2>/dev/null || true
-echo "✅ Jenkins repository ready"
-
-# PHASE 1D: Prepare for Jenkins (repo + docker-compose)
+# PHASE 1D: Prepare Jenkins Docker Compose configuration
 echo ""
 echo "PHASE 1D: Preparing Jenkins Docker Compose..."
+mkdir -p /opt
 cat >/opt/docker-compose.yml <<'COMPOSE_EOF'
 version: '3.8'
 
