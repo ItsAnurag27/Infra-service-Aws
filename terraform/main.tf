@@ -378,18 +378,25 @@ echo ""
 echo "PHASE 1F: Starting Jenkins container..."
 cd /opt
 docker-compose -f docker-compose.yml up -d
+sleep 10  # Give container time to start
 echo "✅ Jenkins container started"
 
 # PHASE 1G: Wait for Jenkins to be ready
 echo ""
 echo "PHASE 1G: Waiting for Jenkins to be ready..."
-for i in {1..60}; do
-  if curl -s -f http://localhost:8080 >/dev/null 2>&1; then
-    echo "✅ Jenkins web interface is ready! ($i seconds)"
-    break
+for i in {1..120}; do
+  if docker ps | grep -q jenkins; then
+    echo "  Container running... checking web interface ($i/120)"
+    if curl -s -f http://localhost:8080 >/dev/null 2>&1; then
+      echo "✅ Jenkins web interface is ready! ($i seconds)"
+      break
+    fi
+  else
+    echo "  Waiting for container to start... ($i/120)"
   fi
-  if [ $i -eq 60 ]; then
+  if [ $i -eq 120 ]; then
     echo "⏳ Jenkins still initializing (first startup takes 1-2 minutes)"
+    docker logs jenkins | tail -20
   fi
   sleep 2
 done
