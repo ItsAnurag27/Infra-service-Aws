@@ -61,11 +61,6 @@ data "aws_subnets" "existing_public" {
 }
 
 # Check if Elastic IP is already associated with an EC2 instance
-data "aws_eip" "existing" {
-  count = var.elastic_ip_allocation_id != "" ? 1 : 0
-  id    = var.elastic_ip_allocation_id
-}
-
 # Locals for unique naming to avoid conflicts
 locals {
   unique_suffix  = substr(data.aws_caller_identity.current.account_id, -4, -1)
@@ -83,9 +78,8 @@ locals {
   s3_bucket_name  = "${var.project_name}-${local.unique_suffix}-storage"
   should_create_s3 = true
 
-  # Skip EC2 creation if EIP is already associated with an instance
-  skip_ec2_creation = var.elastic_ip_allocation_id != "" && try(data.aws_eip.existing[0].instance_id != "", false)
-  should_create_ec2 = !local.skip_ec2_creation
+  # Always create EC2
+  should_create_ec2 = true
 
   # Skip IAM user creation if it already exists (simplified)
   iam_user_exists        = false
@@ -428,15 +422,6 @@ EOF
   }
 
   depends_on = [aws_internet_gateway.main]
-}
-
-# Associate Existing Elastic IP (44.215.75.53) with EC2 instance (only if we created a new EC2)
-resource "aws_eip_association" "app" {
-  count         = local.should_create_ec2 && var.elastic_ip_allocation_id != "" ? 1 : 0
-  instance_id   = aws_instance.app[0].id
-  allocation_id = var.elastic_ip_allocation_id
-
-  depends_on = [aws_instance.app, aws_internet_gateway.main]
 }
 
 # SERVICE 4: S3 Bucket for Storage

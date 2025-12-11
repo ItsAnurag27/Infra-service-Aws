@@ -58,11 +58,6 @@ output "iam_access_key_id" {
   sensitive   = true
 }
 
-output "ec2_elastic_ip_association" {
-  description = "Elastic IP association with EC2 instance"
-  value       = try(aws_eip_association.app[0].id, "Not associated")
-}
-
 output "ec2_names" {
   description = "EC2 instance names"
   value       = aws_instance.app[*].tags.Name
@@ -100,11 +95,11 @@ output "jenkins_deployment_note" {
 }
 
 output "elastic_ip_address" {
-  description = "Elastic IP address associated with EC2 instance"
-  value       = "44.215.75.53"
+  description = "Elastic IP address - NOT USED (using dynamic public IP instead)"
+  value       = "Dynamic public IP will be assigned by AWS"
 }
 
 output "elastic_ip_allocation_id" {
-  description = "Elastic IP allocation ID"
-  value       = var.elastic_ip_allocation_id
+  description = "Elastic IP allocation ID - NOT USED"
+  value       = "Not configured - using dynamic public IP"
 }

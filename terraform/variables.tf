@@ -46,12 +46,6 @@ variable "iam_username" {
   default     = "app-user"
 }
 
-variable "elastic_ip_allocation_id" {
-  description = "Allocation ID of the Elastic IP to associate with EC2 instance"
-  type        = string
-  default     = ""
-}
-
 variable "github_token" {
   description = "GitHub personal access token for cloning private repositories"
   type        = string
