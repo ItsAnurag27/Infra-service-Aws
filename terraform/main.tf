@@ -339,6 +339,38 @@ JENKINS_EOF
 rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key 2>/dev/null || true
 echo "✅ Jenkins repository ready"
 
+# PHASE 1D: Prepare for Jenkins (repo + docker-compose)
+echo ""
+echo "PHASE 1D: Preparing Jenkins Docker Compose..."
+cat >/opt/docker-compose.yml <<'COMPOSE_EOF'
+version: '3.8'
+
+services:
+  jenkins:
+    image: jenkins/jenkins:jdk21
+    container_name: jenkins
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - JENKINS_OPTS=--httpPort=8080
+    restart: unless-stopped
+    networks:
+      - jenkins_network
+
+volumes:
+  jenkins_home:
+    driver: local
+
+networks:
+  jenkins_network:
+    driver: bridge
+COMPOSE_EOF
+echo "✅ Docker Compose configuration ready"
+
 # PHASE 1E: Clone repository
 echo ""
 echo "PHASE 1E: Cloning Docker services repository..."
@@ -346,6 +378,27 @@ mkdir -p /opt/docker-services
 cd /opt/docker-services
 git clone https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git . 2>/dev/null || echo "⚠️  Git clone warning"
 echo "✅ Repository cloned"
+
+# PHASE 1F: Start Jenkins container
+echo ""
+echo "PHASE 1F: Starting Jenkins container..."
+cd /opt
+docker-compose -f docker-compose.yml up -d
+echo "✅ Jenkins container started"
+
+# PHASE 1G: Wait for Jenkins to be ready
+echo ""
+echo "PHASE 1G: Waiting for Jenkins to be ready..."
+for i in {1..60}; do
+  if curl -s -f http://localhost:8080 >/dev/null 2>&1; then
+    echo "✅ Jenkins web interface is ready! ($i seconds)"
+    break
+  fi
+  if [ $i -eq 60 ]; then
+    echo "⏳ Jenkins still initializing (first startup takes 1-2 minutes)"
+  fi
+  sleep 2
+done
 
 # PHASE 1 Complete
 echo ""
@@ -356,94 +409,16 @@ echo "Docker: \$(docker --version)"
 echo "Docker Compose: \$(docker-compose --version)"
 echo "Java: \$(java -version 2>&1 | head -1)"
 echo ""
-echo "📋 NEXT STEP (PHASE 2):"
-echo "   A separate Jenkins installation will run automatically."
-echo "   Monitor: sudo tail -f /var/log/jenkins-final-install.log"
+echo "📋 JENKINS RUNNING:"
+echo "   Access Jenkins at: http://\$(hostname -I | awk '{print \$1}'):8080"
+echo "   Container: \$(docker ps --filter name=jenkins --format '{{.Status}}')"
+echo ""
+echo "📝 GET INITIAL ADMIN PASSWORD:"
+echo "   docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword"
 echo "======================================"
 echo ""
 echo "Log file:  /var/log/setup.log"
 echo "======================================"
-
-# PHASE 2: Install Jenkins (inline in user_data)
-echo ""
-echo "========================================"
-echo "PHASE 2: JENKINS INSTALLATION"
-echo "========================================"
-
-echo "[JENKINS-1] Adding repository..."
-sudo tee /etc/yum.repos.d/jenkins.repo > /dev/null << 'JENKINS_EOF'
-[jenkins]
-name=Jenkins-stable
-baseurl=https://pkg.jenkins.io/redhat-stable
-gpgcheck=1
-gpgkey=https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
-JENKINS_EOF
-echo "✅ Repository added"
-
-echo "[JENKINS-2] Importing GPG key..."
-sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key 2>/dev/null || echo "⚠️  GPG import done"
-echo "✅ GPG key processed"
-
-echo "[JENKINS-3] Downloading Jenkins packages..."
-sudo mkdir -p /tmp/jenkins-download
-sudo yum install --downloadonly --downloaddir=/tmp/jenkins-download -y jenkins fontconfig 2>&1 | tail -2 || true
-echo "✅ Downloaded"
-
-echo "[JENKINS-4] Waiting for I/O..."
-sleep 15
-
-echo "[JENKINS-5] Installing Jenkins..."
-if sudo yum install -y jenkins 2>&1 | tail -3; then
-  echo "✅ Jenkins installed"
-else
-  sudo yum install -y --nogpgcheck jenkins 2>&1 | tail -3
-  echo "✅ Jenkins installed (GPG skipped)"
-fi
-
-echo "[JENKINS-6] Verifying..."
-sudo rpm -qa | grep jenkins || echo "⚠️  Package check done"
-
-echo "[JENKINS-7] Enabling service..."
-sudo systemctl enable jenkins
-echo "✅ Service enabled"
-
-echo "[JENKINS-8] Starting Jenkins..."
-sudo systemctl start jenkins 2>&1 || true
-echo "✅ Start issued"
-
-echo "[JENKINS-9] Waiting for Jenkins to run..."
-for i in {1..60}; do
-  if sudo systemctl is-active --quiet jenkins 2>/dev/null; then
-    echo "✅ Jenkins running! ($i seconds)"
-    break
-  fi
-  sleep 1
-done
-
-echo "[JENKINS-10] Waiting for web interface..."
-sleep 20
-for i in {1..10}; do
-  HTTP=\$(curl -s -o /dev/null -w "%%{http_code}" http://localhost:8080 || echo "000")
-  if echo \$HTTP | grep -E "200|403|401" > /dev/null; then
-    echo "✅ Web interface ready (HTTP \$HTTP)"
-    break
-  fi
-  sleep 5
-done
-
-echo "[JENKINS-11] Getting admin password..."
-sleep 10
-if sudo test -f /var/lib/jenkins/secrets/initialAdminPassword; then
-  echo "✅ Initial Admin Password:"
-  sudo cat /var/lib/jenkins/secrets/initialAdminPassword | head -c 30
-  echo "..."
-fi
-
-echo ""
-echo "========================================"
-echo "✅ PHASE 2: JENKINS COMPLETE!"
-echo "========================================"
-echo "Status: \$(sudo systemctl is-active jenkins)"
 EOF
   )
 
