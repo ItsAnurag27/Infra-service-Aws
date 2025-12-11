@@ -317,9 +317,9 @@ echo "✅ Docker: \$(docker --version)"
 echo ""
 echo "PHASE 1C: Docker Compose installation..."
 COMPOSE_VERSION="v2.24.0"
-curl -L "https://github.com/docker/compose/releases/download/\${COMPOSE_VERSION}/docker-compose-Linux-x86_64" -o /usr/local/bin/docker-compose
+curl -L "https://github.com/docker/compose/releases/download/$COMPOSE_VERSION/docker-compose-Linux-x86_64" -o /usr/local/bin/docker-compose
 chmod +x /usr/local/bin/docker-compose
-echo "✅ Docker Compose: \$(docker-compose --version)"
+echo "✅ Docker Compose: $(docker-compose --version)"
 
 # PHASE 1D: Prepare Jenkins Docker Compose configuration
 echo ""
