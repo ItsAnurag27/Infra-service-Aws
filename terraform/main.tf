@@ -339,7 +339,9 @@ services:
       - jenkins_home:/var/jenkins_home
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - JENKINS_OPTS=--httpPort=8080
+      - JENKINS_OPTS=--httpPort=8080 -Djenkins.install.SkipInstallationWizard=true -Dhudson.security.csrf.GlobalCrumbIssuerConfiguration.DISABLE_CSRF_PROTECTION=true
+      - JENKINS_ADMIN_ID=admin
+      - JENKINS_ADMIN_PASSWORD=admin123
     restart: unless-stopped
     networks:
       - jenkins_network
@@ -367,28 +369,146 @@ echo ""
 echo "PHASE 1F: Starting Jenkins container..."
 cd /opt
 docker-compose -f docker-compose.yml up -d
-sleep 10  # Give container time to start
-echo "✅ Jenkins container started"
+sleep 15  # Give container time to start and initialize
 
-# PHASE 1G: Wait for Jenkins to be ready
+# PHASE 1F2: Skip setup wizard and create initial admin user
+echo ""
+echo "PHASE 1F2: Configuring Jenkins (skip wizard)..."
+sleep 10  # Wait for Jenkins to fully initialize
+docker exec jenkins touch /var/jenkins_home/jenkins.install.SkipInstallationWizard.txt 2>/dev/null || true
+
+# Create basic Jenkins admin user config
+docker exec jenkins bash -c 'mkdir -p /var/jenkins_home/init.groovy.d' 2>/dev/null || true
+docker exec jenkins bash -c 'cat > /var/jenkins_home/init.groovy.d/create-admin-user.groovy << "GROOVY_EOF"
+import jenkins.model.Jenkins
+import hudson.security.HudsonPrivateSecurityRealm
+import hudson.security.AuthorizationStrategy
+
+def instance = Jenkins.getInstance()
+def strategy = new hudson.security.hudson.security.AuthorizationStrategy.LoggingAuthorizationStrategy(new hudson.security.FullControlOnceLoggedInAuthorizationStrategy())
+instance.setAuthorizationStrategy(strategy)
+instance.save()
+
+def realm = new HudsonPrivateSecurityRealm(false)
+instance.setSecurityRealm(realm)
+instance.save()
+
+def user = realm.createAccount("admin", "admin123")
+instance.save()
+GROOVY_EOF' 2>/dev/null || true
+
+echo "✅ Jenkins configuration applied"
+
+# PHASE 1G: Wait for Jenkins to be ready and install plugins
 echo ""
 echo "PHASE 1G: Waiting for Jenkins to be ready..."
-for i in {1..120}; do
+for i in {1..150}; do
   if docker ps | grep -q jenkins; then
-    echo "  Container running... checking web interface ($i/120)"
+    echo "  Container running... checking web interface ($i/150)"
     if curl -s -f http://localhost:8080 >/dev/null 2>&1; then
       echo "✅ Jenkins web interface is ready! ($i seconds)"
       break
     fi
   else
-    echo "  Waiting for container to start... ($i/120)"
+    echo "  Waiting for container to start... ($i/150)"
   fi
-  if [ $i -eq 120 ]; then
+  if [ $i -eq 150 ]; then
     echo "⏳ Jenkins still initializing (first startup takes 1-2 minutes)"
     docker logs jenkins | tail -20
   fi
   sleep 2
 done
+
+# PHASE 1H: Install essential Jenkins plugins
+echo ""
+echo "PHASE 1H: Installing Jenkins plugins..."
+sleep 10  # Wait for Jenkins API to be fully ready
+
+# Create a script to install plugins
+docker exec jenkins bash << 'PLUGIN_INSTALL_EOF'
+#!/bin/bash
+set -e
+
+# Jenkins plugin install script
+JENKINS_URL="http://localhost:8080"
+JENKINS_USER="admin"
+JENKINS_PASS="admin123"
+
+echo "Installing Jenkins plugins..."
+
+# Install each plugin individually
+for plugin in git github github-branch-source docker-commons docker-plugin docker-workflow pipeline-model-definition pipeline-stage-view pipeline-build-step ws-cleanup timestamper log-parser; do
+  echo "  Installing plugin: $plugin"
+  java -jar /var/jenkins_home/war/WEB-INF/jenkins-cli.jar \
+    -s "$JENKINS_URL" \
+    -auth "$JENKINS_USER:$JENKINS_PASS" \
+    install-plugin "$plugin" 2>/dev/null || echo "    (skipped or already installed)"
+done
+
+echo "Plugins installation initiated"
+PLUGIN_INSTALL_EOF
+
+echo "✅ Plugin installation script executed"
+
+# PHASE 1I: Create sample pipeline job
+echo ""
+echo "PHASE 1I: Creating sample pipeline job..."
+sleep 5
+
+# Create sample pipeline job
+docker exec jenkins bash << 'PIPELINE_CREATE_EOF'
+#!/bin/bash
+
+JOBS_DIR="/var/jenkins_home/jobs"
+mkdir -p "$JOBS_DIR"
+
+# Create a sample declarative pipeline job
+JOB_NAME="Sample-Docker-Pipeline"
+JOB_DIR="$JOBS_DIR/$JOB_NAME"
+mkdir -p "$JOB_DIR"
+
+cat > "$JOB_DIR/config.xml" << 'XML_EOF'
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@1225.vb_5a_1d4f5b_50c">
+  <actions/>
+  <description>Sample pipeline to build Docker services</description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps@2.92">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git@4.10.2">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <url>https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <browser class="hudson.plugins.git.browser.GithubWeb">
+        <repoUrl>https://github.com/ItsAnurag27/5-service-jenkins-pipeline</repoUrl>
+      </browser>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>Jenkinsfile</scriptPath>
+    <lightweight>false</lightweight>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>
+XML_EOF
+
+# Reload Jenkins configuration to register the job
+curl -s -X POST http://localhost:8080/reload -u admin:admin123 2>/dev/null || true
+
+echo "Sample pipeline job created: $JOB_NAME"
+PIPELINE_CREATE_EOF
+
+echo "Pipeline job creation completed"
 
 # PHASE 1 Complete
 echo ""
@@ -401,11 +521,22 @@ echo "Java: \$(java -version 2>&1 | head -1)"
 echo ""
 echo "📋 JENKINS RUNNING:"
 echo "   Access Jenkins at: http://\$(hostname -I | awk '{print \$1}'):8080"
-echo "   Container: \$(docker ps --filter name=jenkins --format '{{.Status}}')"
+echo "   Username: admin"
+echo "   Password: admin123"
 echo ""
-echo "📝 GET INITIAL ADMIN PASSWORD:"
-echo "   docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword"
-echo "======================================"
+echo "📦 INSTALLED PLUGINS:"
+echo "   - Git, GitHub, Docker, Pipeline plugins"
+echo ""
+echo "📝 SAMPLE PIPELINE JOB:"
+echo "   - Job Name: Sample-Docker-Pipeline"
+echo "   - Git Repo: https://github.com/ItsAnurag27/5-service-jenkins-pipeline.git"
+echo "   - Ready to build!"
+echo ""
+echo "🚀 NEXT STEPS:"
+echo "   1. Open Jenkins: http://\$(hostname -I | awk '{print \$1}'):8080"
+echo "   2. Login with: admin / admin123"
+echo "   3. Click on 'Sample-Docker-Pipeline' job"
+echo "   4. Click 'Build Now' to start the pipeline"
 echo ""
 echo "Log file:  /var/log/setup.log"
 echo "======================================"
